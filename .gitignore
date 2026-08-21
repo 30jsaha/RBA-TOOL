@@ -7,7 +7,7 @@
 *.sql.gz
 *.dump
 *.tar
-*.zip
+# *.zip
 *.7z
 tree.txt
 
