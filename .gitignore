@@ -1,0 +1,96 @@
+# ==========================================
+# RBA-TOOL (Tax Fraud Detection) .gitignore
+# ==========================================
+
+# Database Dumps & Large Data Files
+*.sql
+*.sql.gz
+*.dump
+*.tar
+*.zip
+*.7z
+tree.txt
+
+# Log Files & Diagnostic Outputs
+*.log
+pipeline_steps.log
+upload_history.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment & Secret Files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+!.env.example
+
+# Python & Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.eggs/
+
+# Node & Frontend Build Artifacts
+node_modules/
+dist/
+dist-ssr/
+build/
+.cache/
+.eslintcache
+.vite/
+
+# Backend Execution Outputs & Data Directories
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/download/*
+!backend/download/.gitkeep
+backend/outputs/*
+!backend/outputs/.gitkeep
+backend/segmented/*
+!backend/segmented/.gitkeep
+backend/temp_outputs/*
+!backend/temp_outputs/.gitkeep
+backend/final_output/*
+!backend/final_output/.gitkeep
+
+# Temporary & Office Files
+~$*
+~$*.docx
+~$*.xlsx
+*.tmp
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Icon?
+Thumbs.db
+desktop.ini
+
+# IDE & Tooling
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

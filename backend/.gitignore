@@ -1,0 +1,39 @@
+# ==========================================
+# Backend .gitignore (Flask API & Pipelines)
+# ==========================================
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Files
+.env
+!.env.example
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Logs & Pipeline Trace Logs
+*.log
+pipeline_steps.log
+upload_history.log
+
+# Upload & Data Output Directories
+uploads/*
+!uploads/.gitkeep
+download/*
+!download/.gitkeep
+outputs/*
+!outputs/.gitkeep
+segmented/*
+!segmented/.gitkeep
+temp_outputs/*
+!temp_outputs/.gitkeep
+final_output/*
+!final_output/.gitkeep
+
+# Temporary Office Files
+~$*

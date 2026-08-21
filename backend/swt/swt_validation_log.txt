@@ -1,0 +1,9 @@
+2026-05-08 16:20:33,251 - Removed 524 rows due to employees_on_payroll > 5000 (auto-removed).
+2026-05-08 16:20:33,438 - Removed 26 rows due to employees_paid_swt > 5000 (auto-removed).
+2026-05-08 16:20:34,616 - Removed records saved to swt_removed_data.csv
+2026-05-08 16:20:34,616 - === SWT Validation Summary ===
+2026-05-08 16:20:34,616 - Total records removed: 550
+2026-05-08 16:20:34,616 -   HIGH_VALUE_EMPLOYEES: 550 records removed
+2026-05-08 16:20:34,616 - === Validation Complete ===
+2026-05-08 16:20:34,616 - Records retained: 1377427
+2026-05-08 16:20:34,616 - Records removed: 550
