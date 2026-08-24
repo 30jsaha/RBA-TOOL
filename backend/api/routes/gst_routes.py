@@ -1,4 +1,4 @@
-﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  api/routes/gst_routes.py
 #  POST /api/gst/run
 #  Accepts uploaded file + optional date range
@@ -1624,13 +1624,111 @@ def run_gst():
     return jsonify({'run_id': run_id, 'status': 'queued', 'message': 'GST pipeline started'}), 202
 
 
+def _get_gst_status_from_db(run_id):
+    try:
+        engine = get_mysql_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT user_id, step_number, step_name, status, records_in, records_out, message, error_detail, logged_at
+                    FROM pipeline_log
+                    WHERE run_id = :run_id AND UPPER(tax_type) = 'GST'
+                    ORDER BY id ASC
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings().all()
+        engine.dispose()
+        if not rows:
+            return None
+
+        has_failed = any(r.get("status") == "failed" for r in rows)
+        has_completed = any(r.get("step_number") == 99 and r.get("status") == "completed" for r in rows)
+        latest_row = rows[-1]
+        db_user_id = next((r.get("user_id") for r in reversed(rows) if r.get("user_id") is not None), None)
+
+        if has_failed:
+            fail_row = next((r for r in reversed(rows) if r.get("status") == "failed"), latest_row)
+            return {
+                "status": "failed",
+                "step": fail_row.get("step_name") or "Failed",
+                "error": fail_row.get("error_detail") or fail_row.get("message") or "Pipeline failed",
+                "progress": 100,
+                "user_id": db_user_id,
+                "run_id": run_id,
+            }
+
+        if has_completed:
+            end_row = next((r for r in rows if r.get("step_number") == 99 and r.get("status") == "completed"), latest_row)
+            tot_rows = end_row.get("records_out") or 0
+            return {
+                "status": "completed",
+                "step": "Completed",
+                "progress": 100,
+                "total_rows": tot_rows,
+                "inserted_rows": tot_rows,
+                "insert_percent": 100,
+                "user_id": db_user_id,
+                "run_id": run_id,
+            }
+
+        latest_by_step = {}
+        for r in rows:
+            step_num = int(r.get("step_number") or 0)
+            latest_by_step[step_num] = r
+
+        completed_steps = [n for n in range(1, 5) if latest_by_step.get(n, {}).get("status") == "completed"]
+        failed_step = next((r for r in reversed(rows) if r.get("status") == "failed"), None)
+
+        if failed_step:
+            return {
+                "status": "failed",
+                "step": failed_step.get("step_name") or "Failed",
+                "progress": int(len(completed_steps) / 4 * 100),
+                "error": failed_step.get("error_detail") or "Run failed",
+                "user_id": db_user_id,
+                "run_id": run_id,
+            }
+
+        insert_entry = latest_by_step.get(4, {})
+        is_inserting = bool(insert_entry) and insert_entry.get("status") in {"started", "completed"}
+        current_step_name = ""
+        for n in range(4, 0, -1):
+            v = latest_by_step.get(n)
+            if v and v.get("step_name"):
+                current_step_name = v["step_name"]
+                break
+        if not current_step_name:
+            current_step_name = latest_by_step.get(0, {}).get("step_name") or "Queued"
+
+        tot_in = latest_row.get("records_in") or 0
+        tot_out = latest_row.get("records_out") or 0
+
+        return {
+            "status": "inserting" if is_inserting else "running",
+            "step": "Background database insertion in progress..." if is_inserting else current_step_name,
+            "progress": 85 if is_inserting else int(len(completed_steps) / 4 * 100),
+            "inserted_rows": tot_out,
+            "total_rows": tot_in,
+            "insert_percent": int((tot_out / tot_in) * 100) if tot_in > 0 else 0,
+            "user_id": db_user_id,
+            "run_id": run_id,
+        }
+    except Exception as e:
+        print(f"[GST_STATUS_DB_FALLBACK] Error: {e}")
+        return None
+
+
 #  GET /api/gst/status/<run_id> 
 
 @gst_bp.route('/api/gst/status/<run_id>', methods=['GET'])
 def gst_status(run_id):
     status = _run_status.get(run_id)
     if not status:
-        return jsonify({'error': 'Run ID not found'}), 404
+        status = _get_gst_status_from_db(run_id)
+        if not status:
+            return jsonify({'error': 'Run ID not found'}), 404
 
     inserted_rows = int(status.get('inserted_rows') or 0)
     total_rows = int(status.get('total_rows') or 0)
@@ -1653,10 +1751,12 @@ def gst_status(run_id):
 #  GET /api/gst/progress/<run_id>
 @gst_bp.route('/api/gst/progress/<run_id>', methods=['GET'])
 def gst_progress(run_id):
-    """Lightweight progress endpoint â€” returns progress % and current step only."""
+    """Lightweight progress endpoint — returns progress % and current step only."""
     status = _run_status.get(run_id)
     if not status:
-        return jsonify({'error': 'Run ID not found'}), 404
+        status = _get_gst_status_from_db(run_id)
+        if not status:
+            return jsonify({'error': 'Run ID not found'}), 404
     return jsonify({
         'run_id':   run_id,
         'status':   status.get('status',   'unknown'),
