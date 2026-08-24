@@ -1,4 +1,5 @@
 ﻿import os
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
@@ -26,15 +27,31 @@ def _get_db_settings():
     }
 
 
+# def _build_mysql_url(settings):
+#     if settings["password"] == "":
+#         return (
+#             f"mysql+pymysql://{settings['user']}@"
+#             f"{settings['host']}:{settings['port']}/{settings['database']}"
+#         )
+
+#     return (
+#         f"mysql+pymysql://{settings['user']}:{settings['password']}@"
+#         f"{settings['host']}:{settings['port']}/{settings['database']}"
+#     )
+
 def _build_mysql_url(settings):
+    user = quote_plus(settings["user"])
+
     if settings["password"] == "":
         return (
-            f"mysql+pymysql://{settings['user']}@"
+            f"mysql+pymysql://{user}@"
             f"{settings['host']}:{settings['port']}/{settings['database']}"
         )
 
+    password = quote_plus(settings["password"])
+
     return (
-        f"mysql+pymysql://{settings['user']}:{settings['password']}@"
+        f"mysql+pymysql://{user}:{password}@"
         f"{settings['host']}:{settings['port']}/{settings['database']}"
     )
 

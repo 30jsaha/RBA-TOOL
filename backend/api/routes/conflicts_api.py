@@ -307,6 +307,7 @@ def list_pending_conflicts():
         return jsonify({"status": "success", "data": [_row_to_conflict_dict(r) for r in (rows or [])]}), 200
 
     except Exception as e:
+        db.session.rollback()
         return jsonify({"status": "error", "message": "Failed to load conflicts", "error": str(e)}), 500
 
 
@@ -343,6 +344,7 @@ def conflicts_history():
         return jsonify({"status": "success", "data": [_row_to_conflict_dict(r) for r in (rows or [])]}), 200
 
     except Exception as e:
+        db.session.rollback()
         return jsonify({"status": "error", "message": "Failed to load history", "error": str(e)}), 500
 
 

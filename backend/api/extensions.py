@@ -49,7 +49,9 @@ class _DB:
         @app.teardown_appcontext
         def _shutdown_session(exception=None):
             try:
-                self._Session.remove()
+                if self._Session is not None:
+                    self._Session.rollback()
+                    self._Session.remove()
             except Exception:
                 pass
 

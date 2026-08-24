@@ -95,19 +95,73 @@ def get_current_security_context():
         g._rbac_security_context = context
         return context
 
-    user_row = db.session.execute(
-        text(
-            """
-            SELECT id, email, full_name, is_active
-            FROM users
-            WHERE id = :user_id
-            LIMIT 1
-            """
-        ),
-        {"user_id": user_id},
-    ).mappings().first()
+    try:
+        user_row = db.session.execute(
+            text(
+                """
+                SELECT id, email, full_name, is_active
+                FROM users
+                WHERE id = :user_id
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
 
-    if not user_row:
+        if not user_row:
+            context = {
+                "user": None,
+                "roles": [],
+                "permissions": set(),
+                "is_active": False,
+            }
+            g._rbac_security_context = context
+            return context
+
+        role_rows = db.session.execute(
+            text(
+                """
+                SELECT DISTINCT r.id, r.name
+                FROM roles r
+                JOIN user_roles ur ON ur.role_id = r.id
+                WHERE ur.user_id = :user_id
+                ORDER BY r.name
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().all()
+
+        permission_rows = db.session.execute(
+            text(
+                """
+                SELECT DISTINCT p.code
+                FROM permissions p
+                JOIN role_permissions rp ON rp.permission_id = p.id
+                JOIN user_roles ur ON ur.role_id = rp.role_id
+                WHERE ur.user_id = :user_id
+                  AND COALESCE(p.is_active, 1) = 1
+                """
+            ),
+            {"user_id": user_id},
+        ).fetchall()
+
+        context = {
+            "user": {
+                "id": int(user_row["id"]),
+                "email": user_row.get("email"),
+                "full_name": user_row.get("full_name"),
+            },
+            "roles": [{"id": int(row["id"]), "name": row["name"]} for row in (role_rows or [])],
+            "permissions": {str(row[0]) for row in (permission_rows or []) if row and row[0]},
+            "is_active": bool(user_row.get("is_active", True)),
+        }
+        g._rbac_security_context = context
+        return context
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         context = {
             "user": None,
             "roles": [],
@@ -116,46 +170,6 @@ def get_current_security_context():
         }
         g._rbac_security_context = context
         return context
-
-    role_rows = db.session.execute(
-        text(
-            """
-            SELECT DISTINCT r.id, r.name
-            FROM roles r
-            JOIN user_roles ur ON ur.role_id = r.id
-            WHERE ur.user_id = :user_id
-            ORDER BY r.name
-            """
-        ),
-        {"user_id": user_id},
-    ).mappings().all()
-
-    permission_rows = db.session.execute(
-        text(
-            """
-            SELECT DISTINCT p.code
-            FROM permissions p
-            JOIN role_permissions rp ON rp.permission_id = p.id
-            JOIN user_roles ur ON ur.role_id = rp.role_id
-            WHERE ur.user_id = :user_id
-              AND COALESCE(p.is_active, 1) = 1
-            """
-        ),
-        {"user_id": user_id},
-    ).fetchall()
-
-    context = {
-        "user": {
-            "id": int(user_row["id"]),
-            "email": user_row.get("email"),
-            "full_name": user_row.get("full_name"),
-        },
-        "roles": [{"id": int(row["id"]), "name": row["name"]} for row in (role_rows or [])],
-        "permissions": {str(row[0]) for row in (permission_rows or []) if row and row[0]},
-        "is_active": bool(user_row.get("is_active", True)),
-    }
-    g._rbac_security_context = context
-    return context
 
 
 def has_any_permission(*permission_codes):

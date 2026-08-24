@@ -79,6 +79,7 @@ def list_users():
     try:
         rows = db.session.execute(query).fetchall()
     except Exception as e:
+        db.session.rollback()
         return jsonify({"message": "Database query failed", "error": str(e)}), 500
 
     users = []
@@ -312,6 +313,7 @@ def list_roles():
     try:
         rows = db.session.execute(text("SELECT id, name FROM roles ORDER BY name ASC")).fetchall()
     except Exception as e:
+        db.session.rollback()
         return jsonify({"message": "Database query failed", "error": str(e)}), 500
 
     roles = [{"id": r[0], "name": r[1]} for r in (rows or [])]
