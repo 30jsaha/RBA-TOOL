@@ -46,6 +46,15 @@ class _DB:
             self._Session = scoped_session(sessionmaker(bind=self._engine))
             self.session = self._Session
 
+        @app.before_request
+        def _ensure_clean_session():
+            try:
+                if self._Session is not None:
+                    # If transaction is in failed / inactive state, rollback cleanly
+                    self._Session.rollback()
+            except Exception:
+                pass
+
         @app.teardown_appcontext
         def _shutdown_session(exception=None):
             try:
