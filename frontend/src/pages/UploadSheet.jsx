@@ -901,18 +901,11 @@ useEffect(() => {
     const getValidatedFileName = (resp) => {
       console.log("validate response =>", resp);
 
-      const fullPath = resp?.validated_file_path;
       const filename = resp?.validated_file;
-
-      if (fullPath) {
-        const extracted = String(fullPath).split(/[\\/]+/).pop();
-        console.log("Extracted validated filename:", extracted);
-        return extracted;
-      }
 
       if (filename) {
         console.log("Using validated filename:", filename);
-        return filename;
+        return String(filename).trim();
       }
 
       return null;
@@ -1053,47 +1046,6 @@ useEffect(() => {
   // -------------------------------
   // FETCH MERGED DATA
   // -------------------------------
-  const handleViewMergedData = async () => {
-  try {
-    let url = "";
-
-    if (taxType === "gst") {
-      url = "/process/details";
-    } else if (taxType === "swt") {
-      url = "/swt/process/details-swt";
-    } else {
-      url = "/cit/process/details-cit";
-    }
-
-    const res = await API.get(url);
-
-    if (res.data.status === "success") {
-      // SAFE RECORDS SET
-      setMergedData(res.data.records || []);
-
-      let excelPath = "";
-      if (taxType === "gst") {
-        excelPath = res.data.justification_file;
-      } else {
-        excelPath = res.data.flags_file;
-      }
-
-      console.log("Excel path:", excelPath); // debug
-
-      setExcelUrl(excelPath || "");
-      setShowMergedTable(true);
-    } else {
-      const msg = res.data?.message || "No data found.";
-      setError(msg);
-      showAlert("error", "No Data", msg);
-    }
-  } catch (err) {
-    const msg = err.response?.data?.message || err.message || "Failed to load data.";
-    setError(msg);
-    showAlert("error", "Load Failed", msg);
-  }
-};
-
   const filteredData = mergedData.filter((item) =>
     Object.values(item).some((v) =>
       String(v).toLowerCase().includes(filterText.toLowerCase())
@@ -1424,17 +1376,14 @@ useEffect(() => {
                         </div>
 
                         {Number(uploadResponse.invalid_records ?? 0) > 0 &&
-                          (uploadResponse.removed_data_file || uploadResponse.removed_data_file_path) && (
+                          uploadResponse.removed_data_file && (
                             <div className="mb-3">
                               <Button
                                 variant="outlined"
                                 color="warning"
                                 size="small"
                                 onClick={() => {
-                                  downloadInvalidCsv(
-                                    uploadResponse.removed_data_file ||
-                                      uploadResponse.removed_data_file_path
-                                  );
+                                  downloadInvalidCsv(uploadResponse.removed_data_file);
                                 }}
                               >
                                 Download Invalid Records CSV
@@ -1449,14 +1398,14 @@ useEffect(() => {
                               {conflictCount}
                             </div>
                             {Number(uploadResponse?.financial_difference_count ?? uploadResponse?.db_financial_differences_count ?? 0) > 0 &&
-                              uploadResponse?.financial_difference_file_path && (
+                              uploadResponse?.financial_difference_file && (
                                 <div className="mb-1">
                                   <Button
                                     variant="outlined"
                                     color="info"
                                     size="small"
                                     onClick={() => {
-                                      downloadInvalidCsv(uploadResponse.financial_difference_file_path);
+                                      downloadInvalidCsv(uploadResponse.financial_difference_file);
                                     }}
                                   >
                                     Download Financial Difference CSV
@@ -1547,30 +1496,19 @@ useEffect(() => {
 
                             if (!baseName) throw new Error("Missing filename");
 
-                            // Prefer secure backend download for GST artifacts.
-                            if (taxType === "gst") {
-                              const downloadUrl = `${API_BASE_URL}/${taxType}/download/${encodeURIComponent(baseName)}`;
-                              console.log("Download URL:", downloadUrl);
+                            const downloadUrl = `${API_BASE_URL}/${taxType}/download/${encodeURIComponent(baseName)}`;
+                            console.log("Download URL:", downloadUrl);
 
-                              const res = await axios.get(downloadUrl, {
-                                responseType: "blob",
-                                headers: { Authorization: `Bearer ${accessToken}` },
-                              });
+                            const res = await axios.get(downloadUrl, {
+                              responseType: "blob",
+                              headers: { Authorization: `Bearer ${accessToken}` },
+                            });
 
-                              const link = document.createElement("a");
-                              link.href = window.URL.createObjectURL(new Blob([res.data]));
-                              link.download = baseName;
-                              link.click();
-                              return;
-                            }
-
-                            // Legacy behavior for other tax types (kept for backward compatibility).
-                            let urlPath = String(excelUrl || "").replace(/\\/g, "/").split("outputs/")[1];
-                            if (urlPath) {
-                              window.open(`${FILE_BASE_URL}/outputs/${urlPath}`, "_blank");
-                            } else {
-                              window.open(excelUrl, "_blank");
-                            }
+                            const link = document.createElement("a");
+                            link.href = window.URL.createObjectURL(new Blob([res.data]));
+                            link.download = baseName;
+                            link.click();
+                            return;
                           } catch (e) {
                             const msg =
                               e?.response?.data?.message ||
@@ -1652,3 +1590,8 @@ useEffect(() => {
     </div>
   );
 }
+
+
+
+
+
