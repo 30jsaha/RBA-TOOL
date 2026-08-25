@@ -1,6 +1,6 @@
 # app/blueprints/dashboard_swt.py
 
-from flask import Blueprint, jsonify, request, Response, current_app
+from flask import Blueprint, jsonify, request, Response, current_app, send_file, url_for
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from datetime import datetime
@@ -10,7 +10,7 @@ import pandas as pd
 import os
 import csv
 from itertools import chain
-from io import StringIO
+from io import BytesIO, StringIO
 import time
 
 bp = Blueprint("dashboard_swt", __name__, url_prefix="/api/swt/dashboard")
@@ -616,62 +616,58 @@ def segmentation_distribution():
         _log_timing("segmentation_distribution", started_at)
 
 
+def _build_latest_swt_records_data(date_params):
+    query = text(f"""
+        SELECT 
+            p.tin,
+            p.taxpayer_name,
+            COALESCE(sm.segmentation, 'Unknown') AS segmentation,
+            p.tax_period_month,
+            p.tax_period_year,
+            COALESCE(p.total_salary_wages_paid, 0) AS total_salary_wages_paid,
+            COALESCE(p.total_swt_tax_deducted, 0) AS total_swt_tax_deducted,
+            COALESCE(p.employees_on_payroll, 0) AS employees_on_payroll,
+            COALESCE(p.employees_paid_swt, 0) AS employees_paid_swt,
+            p.uploaded_at AS created_at
+        FROM swt_fraud_justification p
+        LEFT JOIN taxpayer_segmentation_master sm
+            ON CAST(p.tin AS CHAR(50) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci =
+               CONVERT(sm.tin USING utf8mb4) COLLATE utf8mb4_unicode_ci
+        WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
+        ORDER BY p.uploaded_at DESC
+        LIMIT 20
+    """)
+    rows = db.session.execute(query, date_params).fetchall()
+    return [
+        {
+            "tin": r.tin,
+            "taxpayer_name": r.taxpayer_name,
+            "segmentation": _normalize_unknown_label(r.segmentation, ""),
+            "period": f"{r.tax_period_month}-{r.tax_period_year}",
+            "salary": float(r.total_salary_wages_paid or 0),
+            "swt_tax": float(r.total_swt_tax_deducted or 0),
+            "employees_on_payroll": int(r.employees_on_payroll or 0),
+            "employees_paid_swt": int(r.employees_paid_swt or 0),
+            "created_at": str(r.created_at),
+        }
+        for r in rows
+    ]
+
+
 @bp.get("/latest-records")
 @jwt_required()
 def latest_swt_records():
     started_at = time.time()
-    query = None
     date_params = None
     try:
         date_params = _get_period_bounds()
-        query = text(f"""
-            SELECT 
-                p.tin,
-                p.taxpayer_name,
-                COALESCE(sm.segmentation, 'Unknown') AS segmentation,
-                p.tax_period_month,
-                p.tax_period_year,
-                COALESCE(p.total_salary_wages_paid, 0) AS total_salary_wages_paid,
-                COALESCE(p.total_swt_tax_deducted, 0) AS total_swt_tax_deducted,
-                COALESCE(p.employees_on_payroll, 0) AS employees_on_payroll,
-                COALESCE(p.employees_paid_swt, 0) AS employees_paid_swt,
-                p.uploaded_at AS created_at
-            FROM swt_fraud_justification p
-            LEFT JOIN taxpayer_segmentation_master sm
-                ON CAST(p.tin AS CHAR(50) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci =
-                   CONVERT(sm.tin USING utf8mb4) COLLATE utf8mb4_unicode_ci
-            WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
-            ORDER BY p.uploaded_at DESC
-            LIMIT 20
-        """)
 
         def build_payload():
-            rows = db.session.execute(query, date_params).fetchall()
-            data = [
-                {
-                    "tin": r.tin,
-                    "taxpayer_name": r.taxpayer_name,
-                    "segmentation": _normalize_unknown_label(r.segmentation, ""),
-                    "period": f"{r.tax_period_month}-{r.tax_period_year}",
-                    "salary": float(r.total_salary_wages_paid or 0),
-                    "swt_tax": float(r.total_swt_tax_deducted or 0),
-                    "employees_on_payroll": int(r.employees_on_payroll or 0),
-                    "employees_paid_swt": int(r.employees_paid_swt or 0),
-                    "created_at": str(r.created_at),
-                }
-                for r in rows
-            ]
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = "outputs"
-            os.makedirs(output_dir, exist_ok=True)
-            file_path = f"{output_dir}/latest_swt_records_{timestamp}.xlsx"
-            pd.DataFrame(data).to_excel(file_path, index=False)
-
+            data = _build_latest_swt_records_data(date_params)
             return {
                 "status": "success",
                 "total_records": len(data),
-                "excel_download": file_path.replace("\\", "/"),
+                "excel_download": url_for('dashboard_swt.download_latest_swt_records_excel', **request.args),
                 "records": data,
             }
 
@@ -684,15 +680,36 @@ def latest_swt_records():
         return jsonify(payload)
     except Exception as exc:
         current_app.logger.exception(
-            "latest_swt_records failed; original_exception=%r; sqlalchemy_exception=%r; sql=%s; params=%s",
+            "latest_swt_records failed; original_exception=%r; sqlalchemy_exception=%r; params=%s",
             getattr(exc, "orig", exc),
             exc,
-            query.text if query is not None else None,
             date_params,
         )
         raise
     finally:
         _log_timing("latest_swt_records", started_at)
+
+
+@bp.get("/latest-records/excel")
+@jwt_required()
+def download_latest_swt_records_excel():
+    started_at = time.time()
+    try:
+        date_params = _get_period_bounds()
+        data = _build_latest_swt_records_data(date_params)
+        buffer = BytesIO()
+        pd.DataFrame(data).to_excel(buffer, index=False)
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name='latest_swt_records.xlsx',
+            max_age=0,
+            conditional=False,
+        )
+    finally:
+        _log_timing("download_latest_swt_records_excel", started_at)
     
 # ============================================================
 # F) SWT Heatmap (SWT Deducted vs SWT Eligible Salary)
@@ -1046,6 +1063,7 @@ def download_province():
 
     _debug_csv_sample("swt-province", sample)
     return _build_csv_response(data, "province.csv", columns)
+
 
 
 

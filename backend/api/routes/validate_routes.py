@@ -1,25 +1,27 @@
-# ══════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  api/routes/validate_routes.py
 #
 #  POST /api/gst/validate
 #  POST /api/cit/validate
 #  POST /api/swt/validate
 #
-#  Pre-flight file validation — runs BEFORE the full pipeline.
+#  Pre-flight file validation â€” runs BEFORE the full pipeline.
 #  Accepts an uploaded file, checks column presence and basic
 #  data quality, returns pass/fail + issue list instantly.
 #  Does NOT write to DB, does NOT run the pipeline.
 #
-#  Column matching is FUZZY — uploaded files don't need to use
+#  Column matching is FUZZY â€” uploaded files don't need to use
 #  the exact canonical names; close matches are accepted and
 #  reported as informational mappings in the response.
-# ══════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 import io
 import os
-import shutil
 import re
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 from difflib import SequenceMatcher
 from datetime import datetime
 import pandas as pd
@@ -28,8 +30,56 @@ from flask import Blueprint, request, jsonify
 from api.routes.gst_routes import run_gst_preprocessing
 from api.routes.swt_routes import run_swt_preprocessing
 from utils.auth_helper import get_authenticated_user_id
+from utils.file_security import write_encrypted_output_file
+from utils.upload_security import UploadSecurityError, validate_upload_file
 
 validate_bp = Blueprint('validate', __name__)
+
+
+def _store_encrypted_csv_bytes(output_dir: str, logical_name: str, payload: bytes) -> None:
+    fd, temp_path = tempfile.mkstemp(prefix="validate_", suffix=Path(logical_name).suffix or ".csv")
+    os.close(fd)
+    try:
+        with open(temp_path, "wb") as handle:
+            handle.write(payload)
+        write_encrypted_output_file(temp_path, output_dir, logical_name)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
+
+def _store_encrypted_dataframe(output_dir: str, logical_name: str, dataframe: pd.DataFrame) -> None:
+    payload = dataframe.to_csv(index=False).encode("utf-8")
+    _store_encrypted_csv_bytes(output_dir, logical_name, payload)
+
+
+def _save_validated_upload_copy(file_storage, target_dir: str, *, allowed_extensions) -> tuple[str, str]:
+    safe_name = validate_upload_file(file_storage, allowed_extensions=allowed_extensions)
+    os.makedirs(target_dir, exist_ok=True)
+
+    saved_path = os.path.join(target_dir, safe_name)
+    try:
+        file_storage.stream.seek(0)
+    except Exception:
+        pass
+    file_storage.save(saved_path)
+    try:
+        file_storage.stream.seek(0)
+    except Exception:
+        pass
+
+    return saved_path, safe_name
+
+
+def _logical_output_name(path_value):
+    try:
+        return os.path.basename(str(path_value or "").replace('\\', '/')) or None
+    except Exception:
+        return None
+
 
 def _normalize_field_name_for_schema(field_name: object) -> str:
     try:
@@ -708,9 +758,9 @@ def _export_upload_conflicts_csv_from_db(tax_type: str, conflict_tins, output_pa
         return False
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Shared helpers
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _load_uploaded_file(file_storage):
     """Read a werkzeug FileStorage into a DataFrame."""
@@ -736,11 +786,11 @@ def _add(issues, issue_type, detail, count=None):
     issues.append(entry)
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Fuzzy column matching
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# Minimum similarity score (0–1) to accept a fuzzy match.
+# Minimum similarity score (0â€“1) to accept a fuzzy match.
 # 0.70 catches abbreviations and minor typos without false positives.
 FUZZY_THRESHOLD = 0.70
 
@@ -748,10 +798,10 @@ FUZZY_THRESHOLD = 0.70
 def _tokenise(name: str) -> set:
     """
     Split a column name into a bag of lowercase tokens.
-    'total_gross_salary' → {'total', 'gross', 'salary'}
-    'TotalGrossSalary'   → {'total', 'gross', 'salary'}
+    'total_gross_salary' â†’ {'total', 'gross', 'salary'}
+    'TotalGrossSalary'   â†’ {'total', 'gross', 'salary'}
     """
-    # Insert underscore before uppercase letters (CamelCase → snake_case)
+    # Insert underscore before uppercase letters (CamelCase â†’ snake_case)
     name = re.sub(r'(?<=[a-z])(?=[A-Z])', '_', name)
     # Replace any non-alphanumeric run with a single space
     name = re.sub(r'[^a-z0-9]+', ' ', name.lower())
@@ -771,7 +821,7 @@ def _similarity(canonical: str, actual: str) -> float:
         jaccard = len(t_can & t_act) / len(union)
     else:
         jaccard = 0.0
-    # Weight token overlap slightly higher — catches reordered words
+    # Weight token overlap slightly higher â€” catches reordered words
     return 0.4 * seq_score + 0.6 * jaccard
 
 
@@ -781,11 +831,11 @@ def _fuzzy_map_columns(required_cols: list, df_cols: list, threshold: float = FU
 
     Returns
     -------
-    mapped   : dict  {canonical_name: actual_col_name}   — successful matches
-    missing  : list  [canonical_name]                    — no match found
-    mappings : list  of info dicts for the response      — all fuzzy remaps
+    mapped   : dict  {canonical_name: actual_col_name}   â€” successful matches
+    missing  : list  [canonical_name]                    â€” no match found
+    mappings : list  of info dicts for the response      â€” all fuzzy remaps
     """
-    actual_normalised = {c.strip().lower(): c for c in df_cols}  # norm → original
+    actual_normalised = {c.strip().lower(): c for c in df_cols}  # norm â†’ original
     used = set()        # avoid mapping two canonical cols to the same actual col
     mapped = {}
     missing = []
@@ -838,13 +888,13 @@ def _remap_df(df: pd.DataFrame, mapped: dict) -> pd.DataFrame:
     Return a copy of df with columns renamed to their canonical names.
     Only the columns present in `mapped` are renamed; others are untouched.
     """
-    rename = {v: k for k, v in mapped.items()}   # actual → canonical
+    rename = {v: k for k, v in mapped.items()}   # actual â†’ canonical
     return df.rename(columns=rename)
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  CIT Validation
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 CIT_REQUIRED_COLUMNS = [
     'gross_sales_cash_or_credit', 'total_gross_income', 'cost_of_goods_sold',
@@ -868,13 +918,13 @@ def _validate_cit(df):
     for col in missing:
         _add(issues, 'missing_column', col)
 
-    if missing:          # column errors are fatal — skip row checks
+    if missing:          # column errors are fatal â€” skip row checks
         return issues
 
     df = _remap_df(df, mapped)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # 2 — TIN validation
+    # 2 â€” TIN validation
     if 'tin' in df.columns:
         tin = pd.to_numeric(df['tin'], errors='coerce')
         null_count = tin.isna().sum()
@@ -906,7 +956,7 @@ def _validate_cit(df):
         if sequential:
             _add(issues, 'tin_sequential', 'TIN is a sequential number pattern', sequential)
 
-    # 3 — Assessment number
+    # 3 â€” Assessment number
     if 'assessment_no' in df.columns:
         a_str = df['assessment_no'].astype(str)
         non_num = (~a_str.str.match(r'^\d+$')).sum()
@@ -919,14 +969,14 @@ def _validate_cit(df):
             _add(issues, 'assessment_duplicate',
                  'Duplicate assessment_no values found', dupes)
 
-    # 4 — Tax account number
+    # 4 â€” Tax account number
     if 'tax_account_no' in df.columns:
         non_num = (~df['tax_account_no'].astype(str).str.match(r'^\d+$')).sum()
         if non_num:
             _add(issues, 'tax_account_non_numeric',
                  'tax_account_no contains non-numeric values', non_num)
 
-    # 5 — Gross sales
+    # 5 â€” Gross sales
     if 'gross_sales_cash_or_credit' in df.columns:
         neg = (pd.to_numeric(df['gross_sales_cash_or_credit'],
                               errors='coerce').fillna(0) < 0).sum()
@@ -937,9 +987,9 @@ def _validate_cit(df):
     return issues
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  GST Validation
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _validate_gst(df):
     # GST validation is executed via gst_routes.run_gst_preprocessing().
@@ -951,7 +1001,7 @@ def _validate_gst(df):
     non_critical_missing = [c for c in missing if c not in GST_CRITICAL_COLUMNS]
     for col in non_critical_missing:
         _add(issues, 'missing_expected_column',
-             f'"{col}" is expected but not found — '
+             f'"{col}" is expected but not found â€” '
              f'column standardizer may map it automatically')
 
     if critical_missing:
@@ -960,7 +1010,7 @@ def _validate_gst(df):
     df = _remap_df(df, mapped)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # 3 — TIN checks
+    # 3 â€” TIN checks
     tin_raw = df['tin'].astype(str).str.strip()
     null_count = tin_raw.isin(['', 'nan', 'none', 'null']).sum()
     if null_count:
@@ -971,7 +1021,7 @@ def _validate_gst(df):
     if wrong_len:
         _add(issues, 'tin_wrong_length', 'TIN does not have exactly 9 digits', wrong_len)
 
-    # 4 — Numeric range checks
+    # 4 â€” Numeric range checks
     for col in ['output_tax_payable', 'input_tax_credits', 'net_gst_payable',
                 'total_sales', 'taxable_sales']:
         if col in df.columns:
@@ -979,7 +1029,7 @@ def _validate_gst(df):
             if neg:
                 _add(issues, 'negative_value', f'"{col}" contains negative values', neg)
 
-    # 5 — Duplicate TIN + period
+    # 5 â€” Duplicate TIN + period
     if 'tax_period_year' in df.columns and 'tax_period_month' in df.columns:
         dupes = df.duplicated(
             subset=['tin', 'tax_period_year', 'tax_period_month'], keep=False
@@ -991,9 +1041,9 @@ def _validate_gst(df):
     return issues
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  SWT Validation
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _validate_swt(df):
     return []
@@ -1010,7 +1060,7 @@ def _validate_swt(df):
     non_critical_missing = [c for c in missing if c not in SWT_CRITICAL_COLUMNS]
     for col in non_critical_missing:
         _add(issues, 'missing_expected_column',
-             f'"{col}" is expected but not found — '
+             f'"{col}" is expected but not found â€” '
              f'column standardizer may map it automatically')
 
     if critical_missing:
@@ -1019,7 +1069,7 @@ def _validate_swt(df):
     df = _remap_df(df, mapped)
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # 3 — TIN checks
+    # 3 â€” TIN checks
     tin_raw = df['tin'].astype(str).str.strip()
     null_count = tin_raw.isin(['', 'nan', 'none', 'null']).sum()
     if null_count:
@@ -1040,7 +1090,7 @@ def _validate_swt(df):
     if all_same:
         _add(issues, 'tin_all_same_digits', 'TIN contains all identical digits', all_same)
 
-    # 4 — SWT amount checks
+    # 4 â€” SWT amount checks
     if 'total_swt_withheld' in df.columns:
         neg = (pd.to_numeric(df['total_swt_withheld'], errors='coerce').fillna(0) < 0).sum()
         if neg:
@@ -1053,7 +1103,7 @@ def _validate_swt(df):
             _add(issues, 'negative_value',
                  '"total_gross_salary" contains negative values', neg)
 
-    # 5 — SWT rate sanity: withheld should not exceed gross salary
+    # 5 â€” SWT rate sanity: withheld should not exceed gross salary
     if 'total_swt_withheld' in df.columns and 'total_gross_salary' in df.columns:
         withheld = pd.to_numeric(df['total_swt_withheld'], errors='coerce').fillna(0)
         salary   = pd.to_numeric(df['total_gross_salary'],   errors='coerce').fillna(0)
@@ -1062,7 +1112,7 @@ def _validate_swt(df):
             _add(issues, 'swt_exceeds_salary',
                  'total_swt_withheld exceeds total_gross_salary (rate > 100%)', exceeds)
 
-    # 6 — Duplicate TIN + year
+    # 6 â€” Duplicate TIN + year
     if 'tax_period_year' in df.columns:
         dupes = df.duplicated(subset=['tin', 'tax_period_year'], keep=False).sum()
         if dupes:
@@ -1072,9 +1122,9 @@ def _validate_swt(df):
     return issues
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Shared route logic
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _run_gst_real_validation():
     return _run_gst_validation()
@@ -1087,23 +1137,20 @@ VALIDATORS = {
 
 
 def _run_gst_validation():
+    output_dir_override = None
     file = request.files.get('file')
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
-
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
 
     gst_data_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'data')
     )
     os.makedirs(gst_data_dir, exist_ok=True)
 
-    import werkzeug.utils
-    saved_name = werkzeug.utils.secure_filename(file.filename)
-    saved_path = os.path.join(gst_data_dir, saved_name)
-    file.save(saved_path)
+    try:
+        saved_path, _saved_name = validate_upload_file(file, gst_data_dir, tax_type='GST')
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
 
     try:
         result = run_gst_preprocessing(saved_path, make_timestamped_copies=True)
@@ -1130,10 +1177,10 @@ def _run_gst_validation():
             'db_financial_differences_count': result.get('db_financial_differences_count', 0),
             'db_financial_difference_fields_count': result.get('db_financial_difference_fields_count', 0),
             'validated_file': result.get('validated_file', 'gst_validated.csv'),
-            'validated_file_path': result.get('validated_file_full_path'),  #Now this will work
+            'validated_file_path': _logical_output_name(result.get('validated_file_full_path') or result.get('validated_file')),
             'removed_data_file': result.get('removed_data_file', 'gst_removed_data.csv'),
-            'removed_data_file_path': result.get('removed_file_full_path'),  # Now this will work
-            'output_dir': result.get('output_dir'),
+            'removed_data_file_path': _logical_output_name(result.get('removed_file_full_path') or result.get('removed_data_file')),
+            'output_dir': None,
             'errors': result.get('errors', []),
         }
 
@@ -1142,39 +1189,47 @@ def _run_gst_validation():
         payload['financial_difference_file'] = None
         payload['financial_difference_file_path'] = None
         try:
-            if payload.get('removed_data_file_path') and payload.get('output_dir'):
-                removed_path = payload.get('removed_data_file_path')
+            if payload['financial_difference_count'] > 0:
+                removed_path = result.get('removed_file_full_path')
                 conflict_tins = []
                 try:
-                    use_cols = ["tin", "reason", "taxpayer_name"]
-                    df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
-                    if "reason" in df_removed.columns:
-                        mask = df_removed["reason"].astype(str).str.lower().str.contains(
-                            "financial differences found against gst_fraud_justification", na=False
-                        )
-                        df_fin = df_removed.loc[mask]
-                        if "tin" in df_fin.columns:
-                            conflict_tins = df_fin["tin"].dropna().tolist()
+                    if removed_path and os.path.exists(removed_path):
+                        use_cols = ["tin", "reason", "taxpayer_name"]
+                        df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
+                        if "reason" in df_removed.columns:
+                            mask = df_removed["reason"].astype(str).str.lower().str.contains(
+                                "financial differences found against gst_fraud_justification", na=False
+                            )
+                            df_fin = df_removed.loc[mask]
+                            if "tin" in df_fin.columns:
+                                conflict_tins = df_fin["tin"].dropna().tolist()
                 except Exception:
                     conflict_tins = []
 
-                if payload['financial_difference_count'] > 0:
-                    ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    payload['financial_difference_file'] = f'gst_financial_difference_{ts2}.csv'
-                    payload['financial_difference_file_path'] = os.path.abspath(
-                        os.path.join(payload.get('output_dir'), payload.get('financial_difference_file'))
-                    )
-                    # Export from DB (upload_conflicts) with DB column names
+                ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
+                payload['financial_difference_file'] = f'gst_financial_difference_{ts2}.csv'
+                payload['financial_difference_file_path'] = payload['financial_difference_file']
+                fd, temp_csv_path = tempfile.mkstemp(prefix='gst_financial_difference_', suffix='.csv')
+                os.close(fd)
+                try:
                     _export_upload_conflicts_csv_from_db(
                         "GST",
                         conflict_tins,
-                        payload['financial_difference_file_path'],
+                        temp_csv_path,
                     )
+                    if os.path.exists(temp_csv_path):
+                        write_encrypted_output_file(temp_csv_path, result.get('output_dir'), payload['financial_difference_file'])
+                finally:
+                    try:
+                        if os.path.exists(temp_csv_path):
+                            os.remove(temp_csv_path)
+                    except Exception:
+                        pass
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
 
-        print("[VALIDATE API] validated_file_path =", result.get('validated_file_full_path'))
+        print("[VALIDATE API] validated_file_path =", payload.get('validated_file_path'))
 
         errors = result.get('errors') or []
         if payload['invalid_records'] > 0:
@@ -1220,19 +1275,15 @@ def _run_swt_validation():
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
-
     swt_data_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'Data')
     )
     os.makedirs(swt_data_dir, exist_ok=True)
 
-    import werkzeug.utils
-    saved_name = werkzeug.utils.secure_filename(file.filename)
-    saved_path = os.path.join(swt_data_dir, saved_name)
-    file.save(saved_path)
+    try:
+        saved_path, _saved_name = validate_upload_file(file, swt_data_dir, tax_type='SWT')
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
 
     try:
         result = run_swt_preprocessing(saved_path, make_timestamped_copies=True)
@@ -1282,21 +1333,18 @@ def _run_swt_validation():
             output_dir = result.get('output_dir') or os.path.abspath(
                 os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'final_output')
             )
-            payload['output_dir'] = output_dir
+            payload['output_dir'] = None
 
-            validated_file_path = (
-                result.get('validated_file_full_path')
-                or (os.path.abspath(os.path.join(output_dir, payload.get('validated_file') or '')) if payload.get('validated_file') else None)
+            validated_file_path = _logical_output_name(
+                result.get('validated_file_full_path') or payload.get('validated_file')
             )
-            removed_data_file_path = (
-                result.get('removed_file_full_path')
-                or (os.path.abspath(os.path.join(output_dir, payload.get('removed_data_file') or '')) if payload.get('removed_data_file') else None)
+            removed_data_file_path = _logical_output_name(
+                result.get('removed_file_full_path') or payload.get('removed_data_file')
             )
 
             payload['validated_file_path'] = validated_file_path
             payload['removed_data_file_path'] = removed_data_file_path
 
-            print("[SWT VALIDATE] output_dir =", output_dir)
             print("[SWT VALIDATE] validated_file_path =", validated_file_path)
             print("[SWT VALIDATE] removed_data_file_path =", removed_data_file_path)
         except Exception:
@@ -1312,34 +1360,42 @@ def _run_swt_validation():
         payload['financial_difference_file'] = None
         payload['financial_difference_file_path'] = None
         try:
-            if payload.get('removed_data_file_path') and payload.get('output_dir'):
-                removed_path = payload.get('removed_data_file_path')
+            if payload['financial_difference_count'] > 0:
+                removed_path = result.get('removed_file_full_path')
                 conflict_tins = []
                 try:
-                    use_cols = ["tin", "reason", "taxpayer_name"]
-                    df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
-                    if "reason" in df_removed.columns:
-                        mask = df_removed["reason"].astype(str).str.lower().str.contains(
-                            "financial values differ from existing swt_fraud_justification record", na=False
-                        )
-                        df_fin = df_removed.loc[mask]
-                        if "tin" in df_fin.columns:
-                            conflict_tins = df_fin["tin"].dropna().tolist()
+                    if removed_path and os.path.exists(removed_path):
+                        use_cols = ["tin", "reason", "taxpayer_name"]
+                        df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
+                        if "reason" in df_removed.columns:
+                            mask = df_removed["reason"].astype(str).str.lower().str.contains(
+                                "financial values differ from existing swt_fraud_justification record", na=False
+                            )
+                            df_fin = df_removed.loc[mask]
+                            if "tin" in df_fin.columns:
+                                conflict_tins = df_fin["tin"].dropna().tolist()
                 except Exception:
                     conflict_tins = []
 
-                if payload['financial_difference_count'] > 0:
-                    ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    payload['financial_difference_file'] = f'swt_financial_difference_{ts2}.csv'
-                    payload['financial_difference_file_path'] = os.path.abspath(
-                        os.path.join(payload.get('output_dir'), payload.get('financial_difference_file'))
-                    )
-                    # Export from DB (upload_conflicts) with DB column names
+                ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
+                payload['financial_difference_file'] = f'swt_financial_difference_{ts2}.csv'
+                payload['financial_difference_file_path'] = payload['financial_difference_file']
+                fd, temp_csv_path = tempfile.mkstemp(prefix='swt_financial_difference_', suffix='.csv')
+                os.close(fd)
+                try:
                     _export_upload_conflicts_csv_from_db(
                         "SWT",
                         conflict_tins,
-                        payload['financial_difference_file_path'],
+                        temp_csv_path,
                     )
+                    if os.path.exists(temp_csv_path):
+                        write_encrypted_output_file(temp_csv_path, result.get('output_dir'), payload['financial_difference_file'])
+                finally:
+                    try:
+                        if os.path.exists(temp_csv_path):
+                            os.remove(temp_csv_path)
+                    except Exception:
+                        pass
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
@@ -1372,11 +1428,6 @@ def _run_cit_validation(output_dir_override=None):
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
-
-    import werkzeug.utils
     import importlib.util as _importlib_util
     from datetime import datetime
 
@@ -1388,9 +1439,14 @@ def _run_cit_validation(output_dir_override=None):
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(public_output_dir, exist_ok=True)
 
-    saved_name = werkzeug.utils.secure_filename(file.filename)
-    saved_path = os.path.join(cit_data_dir, saved_name)
-    file.save(saved_path)
+    try:
+        saved_path, _saved_name = _save_validated_upload_copy(
+            file,
+            cit_data_dir,
+            allowed_extensions={'.csv', '.parquet'},
+        )
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
 
     # Captured during DB validation (used for financial-difference CSV export)
     _financial_diff_export_rows = []
@@ -2187,18 +2243,15 @@ def _run_cit_validation(output_dir_override=None):
         validated_file = f'cit_validated_{ts}.csv'
         removed_file = f'cit_removed_data_{ts}.csv'
 
-        validated_path = os.path.join(public_output_dir, validated_file)
-        removed_out_path = os.path.join(public_output_dir, removed_file)
+        try:
+            _store_encrypted_dataframe(public_output_dir, validated_file, cleaned_df)
+        except Exception:
+            _store_encrypted_dataframe(public_output_dir, validated_file, pd.DataFrame())
 
         try:
-            cleaned_df.to_csv(validated_path, index=False)
+            _store_encrypted_dataframe(public_output_dir, removed_file, removed_df)
         except Exception:
-            pd.DataFrame().to_csv(validated_path, index=False)
-
-        try:
-            removed_df.to_csv(removed_out_path, index=False)
-        except Exception:
-            pd.DataFrame().to_csv(removed_out_path, index=False)
+            _store_encrypted_dataframe(public_output_dir, removed_file, pd.DataFrame())
 
         total_records = int(len(cleaned_df)) + int(len(removed_df))
         valid_records = int(len(cleaned_df))
@@ -2233,13 +2286,13 @@ def _run_cit_validation(output_dir_override=None):
         validated_file_path = None
         removed_data_file_path = None
         try:
-            validated_file_path = os.path.abspath(os.path.join(public_output_dir, validated_file)) if validated_file else None
+            validated_file_path = validated_file if validated_file else None
             print("[CIT VALIDATE] validated_file_path =", validated_file_path)
         except Exception:
             validated_file_path = None
 
         try:
-            removed_data_file_path = os.path.abspath(os.path.join(public_output_dir, removed_file)) if removed_file else None
+            removed_data_file_path = removed_file if removed_file else None
             print("[CIT VALIDATE] removed_data_file_path =", removed_data_file_path)
         except Exception:
             removed_data_file_path = None
@@ -2252,27 +2305,31 @@ def _run_cit_validation(output_dir_override=None):
             if financial_difference_count > 0 and public_output_dir:
                 ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
                 financial_difference_file = f'cit_financial_difference_{ts2}.csv'
-                financial_difference_file_path = os.path.abspath(os.path.join(public_output_dir, financial_difference_file))
+                financial_difference_file_path = financial_difference_file
 
                 # Preferred: write from in-memory diff rows (when available)
                 if _financial_diff_export_rows:
-                    pd.DataFrame(
-                        _financial_diff_export_rows,
-                        columns=[
-                            "tin",
-                            "employee_name",
-                            "uploaded_salary",
-                            "system_salary",
-                            "uploaded_tax",
-                            "system_tax",
-                            "difference_amount",
-                            "difference_type",
-                            "reason",
-                        ],
-                    ).to_csv(financial_difference_file_path, index=False)
+                    _store_encrypted_dataframe(
+                        public_output_dir,
+                        financial_difference_file,
+                        pd.DataFrame(
+                            _financial_diff_export_rows,
+                            columns=[
+                                "tin",
+                                "employee_name",
+                                "uploaded_salary",
+                                "system_salary",
+                                "uploaded_tax",
+                                "system_tax",
+                                "difference_amount",
+                                "difference_type",
+                                "reason",
+                            ],
+                        ),
+                    )
 
                 # Fallback: if the file wasn't created but DB conflicts exist, export from DB.
-                if not os.path.exists(financial_difference_file_path):
+                if not os.path.exists(os.path.join(public_output_dir, f"{financial_difference_file}.enc")):
                     try:
                         # Reuse current-upload scope: limit to TINs that were flagged as financial differences
                         # during this validation run (do not dump the entire table).
@@ -2419,7 +2476,7 @@ def _run_cit_validation(output_dir_override=None):
                                 for c in out_cols:
                                     if c not in df_db.columns:
                                         df_db[c] = None
-                                df_db[out_cols].to_csv(financial_difference_file_path, index=False)
+                                _store_encrypted_dataframe(public_output_dir, financial_difference_file, df_db[out_cols])
                     except Exception:
                         pass
         except Exception:
@@ -2443,7 +2500,7 @@ def _run_cit_validation(output_dir_override=None):
             'validated_file_path': validated_file_path,
             'removed_data_file': removed_file,
             'removed_data_file_path': removed_data_file_path,
-            'output_dir': public_output_dir,
+            'output_dir': None,
         }), 200
 
     except Exception:
@@ -2482,13 +2539,13 @@ def _run_validation(tax):
     if tax == 'cit':
         return _run_cit_validation()
 
-    # ── Check 1: no file at all ──────────────────────────────
+    # â”€â”€ Check 1: no file at all â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if 'file' not in request.files or request.files['file'].filename == '':
         return jsonify({'error': 'No file provided'}), 400
 
     file = request.files['file']
 
-    # ── Check 2: wrong file type ─────────────────────────────
+    # â”€â”€ Check 2: wrong file type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fname = file.filename.lower()
     if not (fname.endswith('.csv') or fname.endswith('.parquet')):
         return jsonify({'error': 'Invalid file type. Only .csv or .parquet accepted'}), 400
@@ -2514,10 +2571,10 @@ def _run_validation(tax):
     issues = VALIDATORS[tax](df)
 
     # Severity classification
-    # missing_column / missing_critical_column → error (blocks pipeline)
-    # missing_expected_column → warning (pipeline may still work)
-    # column_remapped → info (fuzzy match happened, just FYI)
-    # everything else → warning
+    # missing_column / missing_critical_column â†’ error (blocks pipeline)
+    # missing_expected_column â†’ warning (pipeline may still work)
+    # column_remapped â†’ info (fuzzy match happened, just FYI)
+    # everything else â†’ warning
     INFO_TYPES  = {'column_remapped'}
     ERROR_TYPES = {'missing_column', 'missing_critical_column'}
     WARN_TYPES  = {'missing_expected_column'}
@@ -2543,16 +2600,16 @@ def _run_validation(tax):
         'warnings':       warnings,
         'infos':          infos,        
         'summary': (
-            'File passed all validation checks — ready to process.'
+            'File passed all validation checks â€” ready to process.'
             if len(errors) == 0 and len(warnings) == 0
             else f'{len(errors)} error(s) and {len(warnings)} warning(s) found.'
         ),
     }), 200
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  Routes
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @validate_bp.route('/api/gst/validate', methods=['POST'])
 def validate_gst():

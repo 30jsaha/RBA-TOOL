@@ -1,8 +1,8 @@
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 #  gst/gst_upload_hook.py
 #  Called by gst_full_pipe_line_with_timer.py
 #  Handles GST upload logging and saving justification to DB
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 import sys
 import os
@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.db_config import get_mysql_engine
 from utils.upload_logger import log_gst_upload, log_pipeline_start, log_pipeline_end
 from utils.auth_helper import get_authenticated_user_id
-from sqlalchemy import text  # ← Fix: required for SQLAlchemy 2.x
+from sqlalchemy import text  # Ã¢â€ Â Fix: required for SQLAlchemy 2.x
 import pandas as pd
 from utils.bulk_insert_utils import (
     DEFAULT_INSERT_CHUNK_SIZE,
@@ -24,6 +24,7 @@ from utils.bulk_insert_utils import (
     table_exists,
 )
 from utils.pipeline_logger import log_step
+from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
 
 
 def _update_latest_gst_upload_batch_references(engine, upload_batch_id, user_id):
@@ -91,6 +92,7 @@ def save_gst_justification_to_db(
     run_id=None,
     status_store=None,
     user_id=None,
+    fallback_output_path=None,
 ):
     """
     Saves GST fraud justification dataframe to MySQL table: gst_fraud_justification
@@ -239,6 +241,10 @@ def save_gst_justification_to_db(
                     'upload_batch_id': upload_batch_id,
                     'user_id': user_id,
                 }
+                try:
+                    cleanup_final_output_directory('GST')
+                except Exception as cleanup_error:
+                    print(f"[FINAL_OUTPUT_CLEANUP][GST] cleanup failed after successful processing: {cleanup_error}")
             except Exception as e:
                 print(f"  Warning: GST upload summary update failed: {e}")
     except Exception as e:
@@ -262,9 +268,12 @@ def save_gst_justification_to_db(
                 )
             except Exception:
                 pass
-        fallback = 'gst_fraud_with_justification.csv'
-        df.to_csv(fallback, index=False)
-        print(f"  Fallback CSV saved: {fallback}")
+        fallback = fallback_output_path or 'gst_fraud_with_justification.csv'
+        fallback_dir = os.path.dirname(os.path.abspath(fallback)) or os.getcwd()
+        fallback_name = os.path.basename(fallback)
+        os.makedirs(fallback_dir, exist_ok=True)
+        write_encrypted_output_dataframe(df if df is not None else pd.DataFrame(), fallback_dir, fallback_name)
+        print(f"  Fallback encrypted output saved: {os.path.join(fallback_dir, fallback_name)}.enc")
     finally:
         if own_engine and engine is not None:
             try:

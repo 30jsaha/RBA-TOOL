@@ -1,12 +1,13 @@
 # app/blueprints/dashboard.py
-from flask import Blueprint, jsonify, request, Response, current_app
+from flask import Blueprint, jsonify, request, Response, current_app, send_file, url_for
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from ..extensions import cache, db
 import csv
-from io import StringIO
+from io import BytesIO, StringIO
+import os
 import time
 
 bp = Blueprint("dashboard", __name__, url_prefix="/api/dashboard")
@@ -734,6 +735,55 @@ def risk_flagged_vs_non():
 # ============================================================
 # F) Latest Tax Records (Table)
 # ============================================================
+def _build_latest_tax_records_data(date_params):
+    query = f"""
+        SELECT
+            p.tin AS tin_number,
+            p.taxpayer_name,
+            p.taxpayer_type,
+            p.tax_period_year,
+            p.tax_period_month,
+            COALESCE(p.gst_payable, 0) AS gst_payable,
+            COALESCE(p.gst_refundable, 0) AS gst_refundable,
+            p.taxpayer_type AS segment_label,
+            CASE
+                WHEN COALESCE(p.is_fraud, 0) = 1 THEN COALESCE(p.explanation, '')
+                ELSE ''
+            END AS fraud_reason,
+            CASE
+                WHEN COALESCE(p.is_fraud, 0) = 1 THEN 'Risk'
+                ELSE 'Normal'
+            END AS risk_type,
+            0 AS risk_score,
+            COALESCE(p.is_fraud, 0) AS is_flag,
+            p.uploaded_at AS created_at
+        FROM gst_fraud_justification p
+        WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
+        ORDER BY p.uploaded_at DESC, p.tin
+        LIMIT 20;
+    """
+
+    rows = db.session.execute(text(query), date_params).mappings()
+    data = []
+    for r in rows:
+        data.append({
+            "tin_number": r["tin_number"],
+            "taxpayer_name": r["taxpayer_name"],
+            "taxpayer_type": r["taxpayer_type"],
+            "tax_period_year": r["tax_period_year"],
+            "tax_period_month": r["tax_period_month"],
+            "gst_payable": float(r["gst_payable"] or 0),
+            "gst_refundable": float(r["gst_refundable"] or 0),
+            "segment_label": r["segment_label"],
+            "risk_score": float(r["risk_score"] or 0),
+            "flagged": "Yes" if r["is_flag"] else "No",
+            "risk_type": r["risk_type"] or "Normal",
+            "fraud_reason": r["fraud_reason"] or "",
+            "created_at": str(r["created_at"]),
+        })
+    return data
+
+
 @bp.get("/latest-records")
 @jwt_required()
 def latest_tax_records():
@@ -743,71 +793,15 @@ def latest_tax_records():
     same logic as upload_history.py.
     """
     started_at = time.time()
-    from datetime import datetime
-    import pandas as pd, os
 
     try:
         date_params = _get_period_bounds()
-
-        query = f"""
-            SELECT
-                p.tin AS tin_number,
-                p.taxpayer_name,
-                p.taxpayer_type,
-                p.tax_period_year,
-                p.tax_period_month,
-                COALESCE(p.gst_payable, 0) AS gst_payable,
-                COALESCE(p.gst_refundable, 0) AS gst_refundable,
-                p.taxpayer_type AS segment_label,
-                CASE
-                    WHEN COALESCE(p.is_fraud, 0) = 1 THEN COALESCE(p.explanation, '')
-                    ELSE ''
-                END AS fraud_reason,
-                CASE
-                    WHEN COALESCE(p.is_fraud, 0) = 1 THEN 'Risk'
-                    ELSE 'Normal'
-                END AS risk_type,
-                0 AS risk_score,
-                COALESCE(p.is_fraud, 0) AS is_flag,
-                p.uploaded_at AS created_at
-            FROM gst_fraud_justification p
-            WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
-            ORDER BY p.uploaded_at DESC, p.tin
-            LIMIT 20;
-        """
-
-        rows = db.session.execute(text(query), date_params).mappings()
-
-        data = []
-        for r in rows:
-            data.append({
-                "tin_number": r["tin_number"],
-                "taxpayer_name": r["taxpayer_name"],
-                "taxpayer_type": r["taxpayer_type"],
-                "tax_period_year": r["tax_period_year"],
-                "tax_period_month": r["tax_period_month"],
-                "gst_payable": float(r["gst_payable"] or 0),
-                "gst_refundable": float(r["gst_refundable"] or 0),
-                "segment_label": r["segment_label"],
-                "risk_score": float(r["risk_score"] or 0),
-                "flagged": "Yes" if r["is_flag"] else "No",
-                "risk_type": r["risk_type"] or "Normal",
-                "fraud_reason": r["fraud_reason"] or "",
-                "created_at": str(r["created_at"])
-            })
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = "outputs"
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, f"latest_tax_records_{timestamp}.xlsx")
-
-        pd.DataFrame(data).to_excel(output_file, index=False)
-
+        data = _build_latest_tax_records_data(date_params)
         return jsonify({
             "status": "success",
             "message": "Latest tax records retrieved successfully.",
             "total_records": len(data),
-            "excel_download": output_file.replace("\\", "/"),
+            "excel_download": url_for('dashboard.download_latest_tax_records_excel', **request.args),
             "records": data
         }), 200
     except Exception as e:
@@ -815,6 +809,29 @@ def latest_tax_records():
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         _log_timing("latest_tax_records", started_at)
+
+
+@bp.get("/latest-records/excel")
+@jwt_required()
+def download_latest_tax_records_excel():
+    started_at = time.time()
+    try:
+        import pandas as pd
+        date_params = _get_period_bounds()
+        data = _build_latest_tax_records_data(date_params)
+        buffer = BytesIO()
+        pd.DataFrame(data).to_excel(buffer, index=False)
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name='latest_tax_records.xlsx',
+            max_age=0,
+            conditional=False,
+        )
+    finally:
+        _log_timing("download_latest_tax_records_excel", started_at)
     
 
 # ============================================================
@@ -1233,6 +1250,7 @@ def download_province_distribution():
         )
     finally:
         _log_timing("download_province_distribution", started_at)
+
 
 
 

@@ -1,8 +1,8 @@
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 #  swt/swt_upload_hook.py
 #  Called by swt_full_pipe_line_with_timer.py
 #  Handles SWT upload logging and saving justification to DB
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 import sys
 import os
@@ -26,6 +26,7 @@ from utils.bulk_insert_utils import (
     table_exists,
 )
 from utils.pipeline_logger import log_step
+from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
 
 
 def save_swt_justification_to_db(
@@ -36,6 +37,7 @@ def save_swt_justification_to_db(
     run_id=None,
     status_store=None,
     user_id=None,
+    fallback_output_path=None,
 ):
     own_engine = False
     try:
@@ -189,6 +191,10 @@ def save_swt_justification_to_db(
                         'upload_batch_id': upload_batch_id,
                         'user_id': user_id,
                     }
+                    try:
+                        cleanup_final_output_directory('SWT')
+                    except Exception as cleanup_error:
+                        print(f"[FINAL_OUTPUT_CLEANUP][SWT] cleanup failed after successful processing: {cleanup_error}")
                 return
             if 0 < existing_batch_rows < total_rows:
                 raise RuntimeError(
@@ -317,6 +323,10 @@ def save_swt_justification_to_db(
                 'upload_batch_id': upload_batch_id,
                 'user_id': user_id,
             }
+            try:
+                cleanup_final_output_directory('SWT')
+            except Exception as cleanup_error:
+                print(f"[FINAL_OUTPUT_CLEANUP][SWT] cleanup failed after successful processing: {cleanup_error}")
     except Exception as e:
         print(f"  Warning: Could not save SWT justification to DB: {e}")
         print(traceback.format_exc())
@@ -338,15 +348,18 @@ def save_swt_justification_to_db(
                 )
             except Exception:
                 pass
-        fallback = 'swt_fraud_with_justification.csv'
+        fallback = fallback_output_path or 'swt_fraud_with_justification.csv'
         try:
             df_fallback = df.copy() if df is not None else pd.DataFrame()
             for col in df_fallback.select_dtypes(include=["object", "string"]).columns.tolist():
                 df_fallback[col] = df_fallback[col].astype(str)
-            df_fallback.to_csv(fallback, index=False, encoding="utf-8-sig")
+            fallback_dir = os.path.dirname(os.path.abspath(fallback)) or os.getcwd()
+            fallback_name = os.path.basename(fallback)
+            os.makedirs(fallback_dir, exist_ok=True)
+            write_encrypted_output_dataframe(df_fallback, fallback_dir, fallback_name)
+            print(f"  Fallback encrypted output saved: {os.path.join(fallback_dir, fallback_name)}.enc")
         except Exception:
-            print("  Warning: Fallback CSV write failed:\n" + traceback.format_exc())
-        print(f"  Fallback CSV saved: {fallback}")
+            print("  Warning: Fallback encrypted write failed:\n" + traceback.format_exc())
     finally:
         if own_engine and engine is not None:
             try:

@@ -1,0 +1,22 @@
+[17:22:52] [INFO] Upload Batch ID: caa6fbb8-40ac-4daf-b9f5-01558ca89e72
+[17:22:52] [INFO] ==================================================
+[17:22:52] [INFO] [SWT PIPELINE INPUT]
+[17:22:52] [INFO] Provided input : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_a4w3y7_z.csv
+[17:22:52] [INFO] Exists         : True
+[17:22:52] [INFO] Resolved path  : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_a4w3y7_z.csv
+[17:22:52] [INFO] ==================================================
+[17:22:52] [INFO] Pipeline started at: 2026-08-24 17:22:52
+[17:22:52] [INFO] Input file: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_a4w3y7_z.csv
+[17:22:52] [INFO] Output directory: C:\Users\Admin\AppData\Local\Temp\swt_9ec1471f-5bfd-4bca-aba1-bda3bae05839_nmua0lfb
+[17:22:52] [INFO]   [OK] Created patched justification script (PGK currency, in temp dir)
+[17:22:52] [INFO] [SKIP] Skipping step: ML Fraud Prediction (redundant with step 5)
+[17:22:52] [INFO]   Checking prerequisites...
+[17:22:52] [INFO] Step input file for 3_swt_feature_engineering.py: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_a4w3y7_z.csv
+[17:22:52] [INFO]   Executing: 3_swt_feature_engineering.py
+[17:22:54] [ERROR]   [ERROR] Failed to execute script: 'ImmediateThread' object has no attribute 'is_alive'
+[17:22:54] [ERROR]    Step failed: Feature Engineering & Rule Checking
+[17:22:54] [INFO] 
+ Cleaning up temporary files...
+[17:22:54] [INFO] 
+ Cleaning up temporary files...
+[17:22:54] [INFO]   Removed: swt_data_after_rule_checking.parquet

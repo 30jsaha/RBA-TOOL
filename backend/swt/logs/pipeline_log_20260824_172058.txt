@@ -1,0 +1,22 @@
+[17:20:58] [INFO] Upload Batch ID: f5212b49-fefb-4526-a675-233a033ac074
+[17:20:58] [INFO] ==================================================
+[17:20:58] [INFO] [SWT PIPELINE INPUT]
+[17:20:58] [INFO] Provided input : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_ky0s0qv1.csv
+[17:20:58] [INFO] Exists         : True
+[17:20:58] [INFO] Resolved path  : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_ky0s0qv1.csv
+[17:20:58] [INFO] ==================================================
+[17:20:58] [INFO] Pipeline started at: 2026-08-24 17:20:58
+[17:20:58] [INFO] Input file: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_ky0s0qv1.csv
+[17:20:58] [INFO] Output directory: C:\Users\Admin\AppData\Local\Temp\swt_738e6162-4768-4d21-807a-525ee490c0d6_vjxxx50l
+[17:20:58] [INFO]   [OK] Created patched justification script (PGK currency, in temp dir)
+[17:20:58] [INFO] [SKIP] Skipping step: ML Fraud Prediction (redundant with step 5)
+[17:20:58] [INFO]   Checking prerequisites...
+[17:20:58] [INFO] Step input file for 3_swt_feature_engineering.py: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_ky0s0qv1.csv
+[17:20:58] [INFO]   Executing: 3_swt_feature_engineering.py
+[17:21:00] [ERROR]   [ERROR] Failed to execute script: 'ImmediateThread' object has no attribute 'join'
+[17:21:00] [ERROR]    Step failed: Feature Engineering & Rule Checking
+[17:21:00] [INFO] 
+ Cleaning up temporary files...
+[17:21:00] [INFO] 
+ Cleaning up temporary files...
+[17:21:00] [INFO]   Removed: swt_data_after_rule_checking.parquet

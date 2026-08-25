@@ -33,13 +33,10 @@ export default function UploadHistory() {
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
   const [searchText, setSearchText] = useState("");
-  const [excelFile, setExcelFile] = useState("");
-  const [downloading, setDownloading] = useState(false);
-  const [activeDownloadId, setActiveDownloadId] = useState(null);
 
   // Fraud popup
   const [openDialog, setOpenDialog] = useState(false);
-  const [fraudMessage, setFraudMessage] = useState("");
+  const [fraudMessage] = useState("");
 
   const BASE_PATH = "/upload-history/details";
 
@@ -53,7 +50,6 @@ export default function UploadHistory() {
         const res = await API.get(BASE_PATH);
 
         setRecords(res.data.records || []);
-        setExcelFile(res.data.excel_download || "");
       } catch (err) {
         setPageError(err.response?.data?.message || err.message);
       } finally {
@@ -81,113 +77,6 @@ export default function UploadHistory() {
   });
 
   // 📊 DataTable Columns
-  const parseDownloadErrorMessage = async (blob) => {
-    if (!(blob instanceof Blob)) {
-      return "";
-    }
-
-    try {
-      const rawText = await blob.text();
-      const parsed = JSON.parse(rawText);
-      return typeof parsed?.message === "string" ? parsed.message : rawText;
-    } catch {
-      return "";
-    }
-  };
-
-  const handleRawFileDownload = async (row) => {
-    if (downloading) {
-      return;
-    }
-
-    let url = null;
-    setDownloading(true);
-    setActiveDownloadId(row.upload_id);
-    Swal.fire({
-      title: "Downloading...",
-      text: "Please wait.",
-      allowOutsideClick: false,
-      allowEscapeKey: false,
-      didOpen: () => {
-        Swal.showLoading();
-      },
-    });
-
-    try {
-      const res = await API.get(`/upload-history/raw-file/${row.upload_id}`, {
-        responseType: "blob",
-      });
-
-      if (![200, 206].includes(res.status)) {
-        throw new Error(`Unexpected status: ${res.status}`);
-      }
-
-      const disposition = res.headers["content-disposition"] || "";
-      const match = disposition.match(
-        /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i
-      );
-
-      const filename = decodeURIComponent(
-        match?.[1] || match?.[2] || row.file_name || "raw-file.csv"
-      );
-
-      // CHANGE ONLY THESE 2 LINES
-      const blob = res.data;
-      url = window.URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      Swal.close();
-    } catch (err) {
-      Swal.close();
-
-      if (!err.response) {
-        await Swal.fire({
-          icon: "error",
-          title: "Unable to contact server",
-          text: "Please try again.",
-        });
-        return;
-      }
-
-      const backendMessage = await parseDownloadErrorMessage(err.response.data);
-
-      if (err.response.status === 404) {
-        await Swal.fire({
-          icon: "error",
-          title: "File not found",
-          text: backendMessage || "File not found",
-        });
-        return;
-      }
-
-      if (err.response.status === 500) {
-        await Swal.fire({
-          icon: "error",
-          title: "Unable to download file",
-          text: backendMessage || "Unexpected server error",
-        });
-        return;
-      }
-
-      await Swal.fire({
-        icon: "error",
-        title: "Unable to download file",
-        text: backendMessage || "Unexpected server error",
-      });
-    } finally {
-      if (url) {
-        window.URL.revokeObjectURL(url);
-      }
-      setDownloading(false);
-      setActiveDownloadId(null);
-    }
-  };
-
   const columns = [
     {
       name: "Date",
@@ -248,18 +137,6 @@ export default function UploadHistory() {
                           style={{ width: "250px" }}
                         />
 
-                        {excelFile && (
-                          <Button
-                            variant="contained"
-                            startIcon={<DownloadIcon />}
-                            onClick={() =>
-                              window.open(`${import.meta.env.VITE_API_BASE_URL}/${excelFile}`)
-                            }
-                            style={{ backgroundColor: "#6A00FF" }}
-                          >
-                            Download Excel
-                          </Button>
-                        )}
                       </div>
                     </div>
 

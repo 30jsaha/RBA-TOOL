@@ -1,0 +1,49 @@
+[17:24:19] [INFO] Upload Batch ID: bf11f5a6-d19b-4fd0-9aa1-626b60090831
+[17:24:19] [INFO] ==================================================
+[17:24:19] [INFO] [SWT PIPELINE INPUT]
+[17:24:19] [INFO] Provided input : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_u8_8t2o6.csv
+[17:24:19] [INFO] Exists         : True
+[17:24:19] [INFO] Resolved path  : E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_u8_8t2o6.csv
+[17:24:19] [INFO] ==================================================
+[17:24:19] [INFO] Pipeline started at: 2026-08-24 17:24:19
+[17:24:19] [INFO] Input file: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_u8_8t2o6.csv
+[17:24:19] [INFO] Output directory: C:\Users\Admin\AppData\Local\Temp\swt_aa3514d3-8fb6-4d43-98c2-b1c2f51b9ec9_ufz9mf1y
+[17:24:19] [INFO]   [OK] Created patched justification script (PGK currency, in temp dir)
+[17:24:19] [INFO] [SKIP] Skipping step: ML Fraud Prediction (redundant with step 5)
+[17:24:19] [INFO]   Checking prerequisites...
+[17:24:19] [INFO] Step input file for 3_swt_feature_engineering.py: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_u8_8t2o6.csv
+[17:24:19] [INFO]   Executing: 3_swt_feature_engineering.py
+[17:24:20] [INFO]     Success: Saved after Feature Engineering
+[17:24:20] [INFO]    Step completed in 1.60 sec
+[17:24:20] [INFO]   Verifying outputs...
+[17:24:20] [INFO]     [OK] Found: swt_data_after_rule_checking.parquet (7.4 KB)
+[17:24:20] [INFO]   Checking prerequisites...
+[17:24:20] [INFO]     [OK] Found: swt_data_after_rule_checking.parquet (7.4 KB)
+[17:24:20] [INFO]     [OK] Found: models/xgboost_model.pkl (469.5 KB)
+[17:24:20] [INFO] Step input file for 5_swt_justification_patched.py: E:\rba-tool\UAT\RBA-TOOL\backend\tmp\decrypted_outputs\rba_u8_8t2o6.csv
+[17:24:20] [INFO]   Executing: C:\Users\Admin\AppData\Local\Temp\5_swt_justification_patched.py
+[17:24:25] [INFO]     Saved parquet: C:\Users\Admin\AppData\Local\Temp\swt_aa3514d3-8fb6-4d43-98c2-b1c2f51b9ec9_ufz9mf1y\swt_fraud_justification.parquet
+[17:24:25] [INFO]     Saved CSV:     C:\Users\Admin\AppData\Local\Temp\swt_aa3514d3-8fb6-4d43-98c2-b1c2f51b9ec9_ufz9mf1y\swt_fraud_justification.csv
+[17:24:25] [INFO]    Step completed in 4.31 sec
+[17:24:25] [INFO]   Verifying outputs...
+[17:24:25] [INFO]     [OK] Found: swt_fraud_justification.parquet (9.6 KB)
+[17:24:25] [INFO]     [OK] Found: swt_fraud_justification.csv (417 B)
+[17:24:25] [INFO] 
+ Analyzing output files...
+[17:24:25] [INFO]   Loaded justification data in 104.21 ms
+[17:24:25] [INFO]     Total Records: 1
+[17:24:25] [INFO]     Fraud Detected: 0 (0.00%)
+[17:24:25] [INFO]     Non-Fraud: 1 (100.00%)
+[17:24:25] [INFO]     Year Distribution:
+[17:24:25] [INFO]       2024: 1 records (0 fraud)
+[17:24:25] [INFO] 
+ Copying final outputs to destination...
+[17:24:25] [INFO]   [OK] Timestamped copy: swt_fraud_justification_20260824_172425.csv
+[17:24:25] [INFO]   Prepared current-run justification dataframe for background DB insert
+[17:24:25] [INFO] 
+ Summary report saved to: E:\rba-tool\UAT\RBA-TOOL\backend\swt\logs\pipeline_summary_report.txt
+[17:24:25] [INFO] 
+ Cleaning up temporary files...
+[17:24:25] [INFO] 
+ Cleaning up temporary files...
+[17:24:25] [INFO]   Removed: swt_data_after_rule_checking.parquet

@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from ..extensions import db
 from utils.auth_helper import get_authenticated_user_id
+from utils.file_utils import get_backend_storage_dir, get_backend_upload_dir
 from utils.rbac import get_current_security_context, has_any_permission
 from datetime import datetime
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -377,6 +378,31 @@ def _upload_history_raw_folder(tax_type):
     return (Path(__file__).resolve().parents[2] / folder_name / "final_output").resolve()
 
 
+def _allowed_upload_history_roots():
+    backend_root = Path(__file__).resolve().parents[2]
+    return [
+        Path(get_backend_upload_dir()).resolve(),
+        Path(get_backend_storage_dir('outputs')).resolve(),
+        (backend_root / 'gst' / 'data').resolve(),
+        (backend_root / 'swt' / 'Data').resolve(),
+        (backend_root / 'cit' / 'data').resolve(),
+    ]
+
+
+def _is_allowed_upload_history_download_path(resolved_path: Path) -> bool:
+    try:
+        candidate = resolved_path.resolve(strict=False)
+    except Exception:
+        return False
+    for allowed_root in _allowed_upload_history_roots():
+        try:
+            candidate.relative_to(allowed_root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 @bp.get("/raw-file/<int:upload_id>")
 @jwt_required()
 def download_upload_history_raw_file(upload_id):
@@ -442,6 +468,8 @@ def download_upload_history_raw_file(upload_id):
 
         if not file_exists:
             return jsonify({"message": "Raw file does not exist on server."}), 404
+        if not _is_allowed_upload_history_download_path(resolved_path):
+            return jsonify({"message": "File not available for download."}), 403
 
         return send_file(
             resolved_path,
@@ -493,6 +521,7 @@ def _verify_recent_uploads_download_token(filename, token, max_age=300):
 
 
 @bp.get("/recent-uploads/downloads/<path:filename>")
+@jwt_required()
 def download_recent_uploads_csv_file(filename):
     from pathlib import Path
 

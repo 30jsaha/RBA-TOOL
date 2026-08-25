@@ -8,6 +8,8 @@
 import os
 import sys
 
+from dotenv import load_dotenv
+
 # Prevent Windows console UnicodeEncodeError (cp1252/charmap) from crashing requests.
 if sys.platform.startswith("win"):
     try:
@@ -19,9 +21,15 @@ if sys.platform.startswith("win"):
 # ── Allow imports from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(dotenv_path=os.path.join(BACKEND_ROOT, ".env"))
+
 from flask import Flask, jsonify
+from werkzeug.exceptions import RequestEntityTooLarge
 from flask_cors import CORS
 from utils.file_utils import get_backend_storage_dir, get_backend_upload_dir
+from utils.file_security import validate_final_output_encryption_config
+from utils.upload_security import get_max_upload_size_bytes
 from utils.rbac import role_required
 
 def _env_flag(name: str) -> bool:
@@ -29,6 +37,7 @@ def _env_flag(name: str) -> bool:
 
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = get_max_upload_size_bytes()
 # CORS (scoped to local React dev server).
 # NOTE: Preflight (OPTIONS) is already allowlisted in auth middleware.
 # CORS(
@@ -85,6 +94,12 @@ cache.init_app(app)
 # Centralized middleware protects all `/api/*` routes except allowlisted.
 from auth import init_auth
 init_auth(app)
+validate_final_output_encryption_config()
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_entity_too_large(_exc):
+    return jsonify({'error': 'Uploaded file exceeds the configured size limit'}), 413
 
 # ── Register route blueprints
 from api.routes import gst_routes, cit_routes, swt_routes, segmentation as segmentation_routes
@@ -214,3 +229,6 @@ if __name__ == '__main__':
 #    POST /api/cit/validate   (multipart/form-data, field: file)
 #    POST /api/swt/validate   (multipart/form-data, field: file)
 # ──────────────────────────────────────────────────────────────
+
+
+

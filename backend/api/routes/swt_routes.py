@@ -1,9 +1,9 @@
-﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 #  api/routes/swt_routes.py
 #  POST /api/swt/run
 #  Accepts uploaded file + optional date range
 #  Runs SWT fraud pipeline and returns results as JSON
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 
 import os
 import sys
@@ -24,8 +24,10 @@ from config.db_config import get_mysql_engine
 from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, log_step
 from utils.auth_helper import get_authenticated_user_id
 from utils.auth_helper import set_authenticated_user_id_for_context
+from utils.file_security import FinalOutputSecurityError, materialize_output_to_tempfile, output_exists, sanitize_file_reference, sanitize_output_filename, secure_download_response, write_encrypted_output_file, write_encrypted_output_dataframe
+from utils.upload_security import UploadSecurityError, validate_upload_file
 from swt.swt_upload_hook import save_swt_justification_to_db
-from flask import send_from_directory
+from flask import Response
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
@@ -463,18 +465,17 @@ def validate_swt():
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
+    try:
+        saved_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
 
-    import werkzeug.utils
 
     swt_data_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'Data')
     )
     os.makedirs(swt_data_dir, exist_ok=True)
 
-    saved_name = werkzeug.utils.secure_filename(file.filename)
     saved_path_processing = os.path.join(swt_data_dir, saved_name)
 
     upload_saved_filename = None
@@ -637,6 +638,11 @@ def validate_swt():
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
+
+        payload['validated_file_path'] = payload.get('validated_file') if payload.get('validated_file') else None
+        payload['removed_data_file_path'] = payload.get('removed_data_file') if payload.get('removed_data_file') else None
+        payload['financial_difference_file_path'] = payload.get('financial_difference_file') if payload.get('financial_difference_file') else None
+        payload['output_dir'] = None
 
         upload_validation_summary_id = None
         engine = None
@@ -904,38 +910,21 @@ def download_swt_file(filename):
     Secure download endpoint for files in backend/swt/final_output.
     """
     try:
-        safe_name = secure_filename(filename)
-        if not safe_name:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        allowed_extensions = {'.csv', '.txt', '.xlsx', '.parquet'}
-        ext = os.path.splitext(safe_name)[1].lower()
-        if ext not in allowed_extensions:
-            return jsonify({"success": False, "message": "Invalid file type"}), 400
-
-        if not safe_name.startswith("swt_"):
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        # NOTE: This file lives under `backend/api/routes/`. We want the real outputs
-        # folder at `backend/swt/final_output` (not `<repo_root>/swt/final_output`).
+        logical_name = sanitize_output_filename(filename, expected_prefix='swt_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'swt', 'final_output'))
         os.makedirs(output_dir, exist_ok=True)
-
-        candidate = os.path.abspath(os.path.join(output_dir, safe_name))
-        print("[SWT DOWNLOAD] file_path =", candidate)
-        print("[SWT DOWNLOAD] exists =", os.path.exists(candidate))
-        if os.path.commonpath([candidate, output_dir]) != output_dir:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        if not os.path.exists(candidate):
-            return jsonify({"success": False, "message": "File not found", "filename": safe_name}), 404
-
-        return send_from_directory(output_dir, safe_name, as_attachment=True)
-
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
+        if not output_exists(output_dir, logical_name):
+            return jsonify({"success": False, "message": "File not found"}), 404
+        return secure_download_response(output_dir, logical_name)
+    except ValueError:
+        return jsonify({"success": False, "message": "Invalid filename"}), 400
+    except FinalOutputSecurityError as exc:
+        if str(exc) in {"Invalid filename", "Invalid file type"}:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        return jsonify({"success": False, "message": "Secure file handling is not configured"}), 500
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download file"}), 500
 
 def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=False, output_dir_override=None, upload_history_id=None):
     """
@@ -1750,12 +1739,12 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                     validated_file_name = f'swt_validated_{stamp}.csv'
                     os.makedirs(public_output_dir, exist_ok=True)
                     validated_file_full_path = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                    shutil.copy2(validated_csv, validated_file_full_path)
+                    write_encrypted_output_file(validated_csv, public_output_dir, validated_file_name)
                 if os.path.exists(removed_csv) and invalid_records > 0:
                     removed_file_name = f'swt_removed_data_{stamp}.csv'
                     os.makedirs(public_output_dir, exist_ok=True)
                     removed_file_full_path = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                    shutil.copy2(removed_csv, removed_file_full_path)
+                    write_encrypted_output_file(removed_csv, public_output_dir, removed_file_name)
             except Exception:
                 validated_file_name = 'swt_validated.csv'
                 removed_file_name = 'swt_removed_data.csv'
@@ -1765,10 +1754,10 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
         # Fall back to static paths if timestamped copies weren't created.
         if validated_file_full_path is None:
             candidate = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-            validated_file_full_path = candidate if os.path.exists(candidate) else None
+            validated_file_full_path = candidate if output_exists(public_output_dir, validated_file_name) else None
         if removed_file_full_path is None:
             candidate = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-            removed_file_full_path = candidate if os.path.exists(candidate) else None
+            removed_file_full_path = candidate if output_exists(public_output_dir, removed_file_name) else None
 
         print("[SWT] validated_file_full_path:", validated_file_full_path)
         print("[SWT] removed_file_full_path:", removed_file_full_path)
@@ -1811,12 +1800,18 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
             pass
 
 
-def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None):
+def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_validated_file=False):
     engine = None
     start_total = time.time()
     original_dir = os.getcwd()
 
     try:
+        if is_validated_file:
+            swt_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'final_output'))
+            logical_name = os.path.basename(str(saved_path or ''))
+            with materialize_output_to_tempfile(swt_output_dir, logical_name) as decrypted_input_path:
+                return _run_swt_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
+
         print("=" * 100)
         print("PIPELINE START")
         print("Timestamp:", datetime.now().isoformat())
@@ -1868,7 +1863,7 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
             ('Fraud Justification Generation',     4),
         ]
 
-        # â”€â”€ Step progress callback: fired by orchestrator for each step â”€â”€â”€â”€â”€â”€
+        # ── Step progress callback: fired by orchestrator for each step ──────
         # The orchestrator runs all steps internally; we inject a callback so
         # log_step is called at the START of each step (not all at once).
         step_start_times = {}
@@ -1892,7 +1887,7 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if hasattr(orchestrator, 'on_step_end'):
             orchestrator.on_step_end   = _on_step_end
 
-        # Fire step-1 started now (always safe â€” it's the first thing that runs)
+        # Fire step-1 started now (always safe — it's the first thing that runs)
         _on_step_start('Data Preparation & Standardization', 1)
 
         # Run the full orchestrator (it runs all steps internally)
@@ -1923,7 +1918,7 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         # If the orchestrator has no callback support, mark remaining steps completed
         for step_name, step_num in swt_steps:
             if step_num not in step_start_times:
-                # Was never individually started â€” log as completed with split time
+                # Was never individually started — log as completed with split time
                 log_step(engine, run_id, 'SWT', step_num, step_name,
                          status='completed',
                          elapsed_sec=round(elapsed / len(swt_steps), 2))
@@ -1931,6 +1926,13 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         just_df = getattr(orchestrator, 'justification_df', None)
         if just_df is None:
             raise RuntimeError('SWT current-run justification dataframe missing before background DB insert')
+
+        final_output_dir = os.path.abspath(os.path.join(swt_dir, 'final_output'))
+        os.makedirs(final_output_dir, exist_ok=True)
+        export_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        logical_justification_name = f'swt_fraud_justification_{export_stamp}.csv'
+        write_encrypted_output_dataframe(just_df, final_output_dir, logical_justification_name)
+        justification_final_path = os.path.join(final_output_dir, logical_justification_name)
 
         total_rows = int(len(just_df.index))
         _run_status[run_id] = {
@@ -1955,6 +1957,7 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                 'run_id': run_id,
                 'status_store': _run_status,
                 'user_id': current_user_id,
+                'fallback_output_path': justification_final_path,
             },
             daemon=True,
         )
@@ -1996,41 +1999,27 @@ def run_swt():
     saved_name = None
 
     if validated_file:
-        import werkzeug.utils
-        safe_name = werkzeug.utils.secure_filename(validated_file)
-        if not safe_name:
+        try:
+            safe_name = sanitize_file_reference(validated_file)
+            backend_root = Path(__file__).resolve().parents[2]
+            output_dir = (backend_root / "swt" / "final_output").resolve()
+            os.makedirs(str(output_dir), exist_ok=True)
+            if not output_exists(str(output_dir), safe_name):
+                return jsonify({'success': False, 'error': 'validated file not found'}), 404
+            saved_path = os.path.join(str(output_dir), safe_name)
+            saved_name = safe_name
+        except ValueError:
             return jsonify({'error': 'Invalid validated_file'}), 400
-        if not _allowed_file(safe_name):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
-
-        backend_root = Path(__file__).resolve().parents[2]
-        output_dir = (backend_root / "swt" / "final_output").resolve()
-        os.makedirs(str(output_dir), exist_ok=True)
-
-        validated_file_path = (output_dir / os.path.basename(safe_name)).resolve()
-        print("[SWT RUN] validated_file_path =", validated_file_path)
-        print("[SWT RUN] exists =", validated_file_path.exists())
-
-        candidate = str(validated_file_path)
-
-        output_dir_str = str(output_dir)
-        if os.path.commonpath([candidate, output_dir_str]) != output_dir_str:
-            return jsonify({'error': 'Invalid validated_file path'}), 400
-        if not os.path.exists(candidate):
-            return jsonify({
-                'success': False,
-                'error': f'validated file not found: {safe_name}',
-                'searched_path': candidate,
-            }), 404
-
-        saved_path = candidate
-        saved_name = safe_name
     else:
         if not file or not file.filename:
             return jsonify({'error': 'No file uploaded'}), 400
-        if not _allowed_file(file.filename):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
+        try:
+            validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+            file.stream.seek(0)
+        except UploadSecurityError as exc:
+            return jsonify({'error': str(exc)}), 400
 
+    run_id = str(uuid.uuid4())
     run_id = str(uuid.uuid4())
 
     if saved_path is None:
@@ -2039,8 +2028,7 @@ def run_swt():
         )
         os.makedirs(swt_data_dir, exist_ok=True)
 
-        import werkzeug.utils
-        saved_name = werkzeug.utils.secure_filename(file.filename)
+        saved_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
         saved_path = os.path.join(swt_data_dir, saved_name)
         file.save(saved_path)
 
@@ -2059,7 +2047,7 @@ def run_swt():
 
     thread = threading.Thread(
         target=_run_swt_pipeline,
-        args=(run_id, saved_path, date_from, date_to, current_user_id),
+        args=(run_id, saved_path, date_from, date_to, current_user_id, bool(validated_file)),
         daemon=True
     )
     print("[SWT RUN] Starting pipeline thread")
@@ -2180,11 +2168,11 @@ def swt_status(run_id):
     return jsonify({"error": "Run ID not found"}), 404
 
 
-# â”€â”€ GET /api/swt/progress/<run_id> â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/swt/progress/<run_id> ───────────────────────────
 
 @swt_bp.route('/api/swt/progress/<run_id>', methods=['GET'])
 def swt_progress(run_id):
-    """Lightweight progress endpoint â€” returns progress % and current step only."""
+    """Lightweight progress endpoint — returns progress % and current step only."""
     status = _run_status.get(run_id)
     if not status:
         return jsonify({'error': 'Run ID not found'}), 404
@@ -2196,11 +2184,11 @@ def swt_progress(run_id):
     }), 200
 
 
-# â”€â”€ GET /api/swt/summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/swt/summary ──────────────────────────────────────
 
 @swt_bp.route('/api/swt/summary', methods=['GET'])
 def swt_summary():
-    """Overall fraud stats across ALL records â€” for dashboard KPI cards."""
+    """Overall fraud stats across ALL records — for dashboard KPI cards."""
     try:
         import pandas as pd
         engine = get_mysql_engine()
@@ -2220,11 +2208,11 @@ def swt_summary():
         return jsonify({'error': str(e)}), 500
 
 
-# â”€â”€ GET /api/swt/results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/swt/results ──────────────────────────────────────
 
 @swt_bp.route('/api/swt/results', methods=['GET'])
 def swt_results():
-    """Paginated SWT results â€” for the data table view."""
+    """Paginated SWT results — for the data table view."""
     try:
         import pandas as pd
 
@@ -2255,4 +2243,10 @@ def swt_results():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+
+
 

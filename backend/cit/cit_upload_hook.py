@@ -1,8 +1,8 @@
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 #  cit/cit_upload_hook.py
 #  Called by cit_full_pipeline_with_timer.py
 #  Handles CIT upload logging and saving justification to DB
-# ══════════════════════════════════════════════════════════════
+# Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 import sys
 import os
@@ -10,13 +10,13 @@ import uuid
 from datetime import datetime
 import time
 
-# ── Allow imports from project root
+# Ã¢â€â‚¬Ã¢â€â‚¬ Allow imports from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.db_config import get_mysql_engine
 from utils.upload_logger import log_cit_upload, log_pipeline_start, log_pipeline_end
 from utils.auth_helper import get_authenticated_user_id
-from sqlalchemy import text  # ← Fix: required for SQLAlchemy 2.x
+from sqlalchemy import text  # Ã¢â€ Â Fix: required for SQLAlchemy 2.x
 import pandas as pd
 from utils.bulk_insert_utils import (
     DEFAULT_INSERT_CHUNK_SIZE,
@@ -25,6 +25,7 @@ from utils.bulk_insert_utils import (
     table_exists,
 )
 from utils.pipeline_logger import log_step
+from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
 
 
 def save_cit_justification_to_db(
@@ -202,6 +203,10 @@ def save_cit_justification_to_db(
                 'user_id': user_id,
                 'run_id': run_id,
             }
+            try:
+                cleanup_final_output_directory('CIT')
+            except Exception as cleanup_error:
+                print(f"[FINAL_OUTPUT_CLEANUP][CIT] cleanup failed after successful processing: {cleanup_error}")
     except Exception as e:
         print(f"  Warning: Could not save CIT justification to DB: {e}")
         if run_id and status_store is not None:
@@ -225,9 +230,11 @@ def save_cit_justification_to_db(
                 pass
         script_dir   = os.path.dirname(os.path.abspath(__file__))
         fallback = fallback_output_path or os.path.join(script_dir, 'final_output', 'cit_fraud_with_justification.csv')
-        os.makedirs(os.path.dirname(fallback), exist_ok=True)
-        df.to_csv(fallback, index=False)
-        print(f"  Fallback CSV saved: {fallback}")
+        fallback_dir = os.path.dirname(os.path.abspath(fallback)) or os.getcwd()
+        fallback_name = os.path.basename(fallback)
+        os.makedirs(fallback_dir, exist_ok=True)
+        write_encrypted_output_dataframe(df if df is not None else pd.DataFrame(), fallback_dir, fallback_name)
+        print(f"  Fallback encrypted output saved: {os.path.join(fallback_dir, fallback_name)}.enc")
     finally:
         if own_engine and engine is not None:
             try:

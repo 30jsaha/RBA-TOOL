@@ -1,9 +1,9 @@
-﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 #  api/routes/cit_routes.py
 #  POST /api/cit/run
 #  Accepts uploaded file + optional date range
 #  Runs CIT fraud pipeline and returns results as JSON
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 
 import os
 import shutil
@@ -25,7 +25,17 @@ from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, lo
 from utils.auth_helper import get_authenticated_user_id, set_authenticated_user_id_for_context
 from cit.cit_upload_hook import save_cit_justification_to_db
 from cit.runtime_context import set_runtime_context, clear_runtime_context
-from flask import send_from_directory
+from utils.file_security import (
+    FinalOutputSecurityError,
+    materialize_output_to_tempfile,
+    output_exists,
+    sanitize_file_reference,
+    sanitize_output_filename,
+    secure_download_response,
+    write_encrypted_output_dataframe,
+    write_encrypted_output_file,
+)
+from utils.upload_security import UploadSecurityError, validate_upload_file
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
@@ -45,12 +55,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def _save_validation_upload(file, tax_prefix: str):
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = secure_filename(file.filename or "")
-    saved_filename = f"{tax_prefix}_{timestamp}_{safe_name}"
+    validated_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+    saved_filename = f"{tax_prefix}_{timestamp}_{validated_name}"
     saved_path = os.path.join(UPLOAD_FOLDER, saved_filename)
     file.save(saved_path)
 
-    ext = os.path.splitext(safe_name)[1].lower().lstrip(".")
+    ext = os.path.splitext(validated_name)[1].lower().lstrip(".")
     file_format = ext or None
     try:
         file_size_kb = round((os.path.getsize(saved_path) or 0) / 1024, 2)
@@ -371,9 +381,13 @@ def validate_cit():
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
+    try:
+        validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+        file.stream.seek(0)
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
+    except Exception:
+        pass
 
     upload_saved_filename = None
     upload_saved_path = None
@@ -534,6 +548,10 @@ def validate_cit():
                 pass
 
         if status_code == 200 and isinstance(payload, dict) and payload:
+            payload['validated_file_path'] = payload.get('validated_file') if payload.get('validated_file') else None
+            payload['removed_data_file_path'] = payload.get('removed_data_file') if payload.get('removed_data_file') else None
+            payload['financial_difference_file_path'] = payload.get('financial_difference_file') if payload.get('financial_difference_file') else None
+            payload['output_dir'] = None
             return jsonify(payload), status_code
         return base_resp, status_code
 
@@ -549,44 +567,33 @@ def download_cit_file(filename):
     Secure download endpoint for files in backend/cit/final_output.
     """
     try:
-        safe_name = secure_filename(filename)
-        if not safe_name:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        allowed_extensions = {'.csv', '.txt', '.xlsx', '.parquet'}
-        ext = os.path.splitext(safe_name)[1].lower()
-        if ext not in allowed_extensions:
-            return jsonify({"success": False, "message": "Invalid file type"}), 400
-
-        if not safe_name.startswith("cit_"):
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        # NOTE: This file lives under `backend/api/routes/`. We want the real outputs
-        # folder at `backend/cit/final_output` (not `<repo_root>/cit/final_output`).
+        logical_name = sanitize_output_filename(filename, expected_prefix='cit_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'cit', 'final_output'))
         os.makedirs(output_dir, exist_ok=True)
-
-        candidate = os.path.abspath(os.path.join(output_dir, safe_name))
-        print("[CIT DOWNLOAD] file_path =", candidate)
-        print("[CIT DOWNLOAD] exists =", os.path.exists(candidate))
-        if os.path.commonpath([candidate, output_dir]) != output_dir:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        if not os.path.exists(candidate):
-            return jsonify({"success": False, "message": "File not found", "filename": safe_name}), 404
-
-        return send_from_directory(output_dir, safe_name, as_attachment=True)
-
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
+        if not output_exists(output_dir, logical_name):
+            return jsonify({"success": False, "message": "File not found"}), 404
+        return secure_download_response(output_dir, logical_name)
+    except ValueError:
+        return jsonify({"success": False, "message": "Invalid filename"}), 400
+    except FinalOutputSecurityError as exc:
+        if str(exc) in {"Invalid filename", "Invalid file type"}:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        return jsonify({"success": False, "message": "Secure file handling is not configured"}), 500
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download file"}), 500
 
 def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_prevalidated: bool = False):
     engine = None
     original_dir = os.getcwd()
 
     try:
+        if is_prevalidated:
+            cit_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'cit', 'final_output'))
+            logical_name = os.path.basename(str(saved_path or ''))
+            with materialize_output_to_tempfile(cit_output_dir, logical_name) as decrypted_input_path:
+                return _run_cit_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
+
         # Propagate authenticated user_id into this background thread (NULL-safe).
         current_user_id = _normalize_authenticated_user_id(current_user_id)
         set_authenticated_user_id_for_context(current_user_id)
@@ -615,9 +622,12 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         runtime_output_dir = tempfile.mkdtemp(prefix=f'cit_{run_id}_')
         run_files = _build_cit_run_files(str(runtime_output_dir), run_id)
         export_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        validated_final_path = os.path.join(final_output_dir, f'cit_validated_{export_stamp}.csv')
-        removed_final_path = os.path.join(final_output_dir, f'cit_removed_data_{export_stamp}.csv')
-        justification_final_path = os.path.join(final_output_dir, f'cit_fraud_with_justification_{export_stamp}.csv')
+        validated_final_name = f'cit_validated_{export_stamp}.csv'
+        removed_final_name = f'cit_removed_data_{export_stamp}.csv'
+        justification_final_name = f'cit_fraud_with_justification_{export_stamp}.csv'
+        validated_final_path = os.path.join(final_output_dir, validated_final_name)
+        removed_final_path = os.path.join(final_output_dir, removed_final_name)
+        justification_final_path = os.path.join(final_output_dir, justification_final_name)
         set_runtime_context(
             current_input_file=os.path.abspath(saved_path),
             output_dir=run_files["output_dir"],
@@ -644,7 +654,6 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
             if not os.path.exists(cleaned_file_path):
                 os.makedirs(os.path.dirname(cleaned_file_path), exist_ok=True)
                 shutil.copy2(os.path.abspath(saved_path), cleaned_file_path)
-            validated_final_path = os.path.abspath(saved_path)
             steps = [
                 ('Rule Engine',               run_script_3, 3),
                 ('Prediction',                run_script_4, 4),
@@ -694,9 +703,9 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 
                 records_out = len(result) if hasattr(result, '__len__') else None
                 if step_num == 2 and not is_prevalidated and result is not None:
-                    result.to_csv(validated_final_path, index=False)
+                    write_encrypted_output_dataframe(result, final_output_dir, validated_final_name)
                     if os.path.exists(run_files["removed_file"]):
-                        shutil.copy2(run_files["removed_file"], removed_final_path)
+                        write_encrypted_output_file(run_files["removed_file"], final_output_dir, removed_final_name)
                 if step_num == 5:
                     final_df = result
                 log_step(engine, run_id, 'CIT', step_num, step_name,
@@ -718,7 +727,7 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if final_df is None:
             raise RuntimeError('CIT justification dataframe missing before background DB insert')
 
-        final_df.to_csv(justification_final_path, index=False)
+        write_encrypted_output_dataframe(final_df, final_output_dir, justification_final_name)
 
         total_rows = int(len(final_df.index))
         _run_status[run_id] = {
@@ -775,6 +784,7 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 
 
 @cit_bp.route('/api/cit/run', methods=['POST'])
+@jwt_required()
 def run_cit():
     file           = request.files.get('file')
     validated_file = request.form.get('validated_file', '').strip()
@@ -786,41 +796,27 @@ def run_cit():
     saved_name = None
 
     if validated_file:
-        import werkzeug.utils
-        safe_name = werkzeug.utils.secure_filename(validated_file)
-        if not safe_name:
+        try:
+            safe_name = sanitize_file_reference(validated_file)
+            backend_root = Path(__file__).resolve().parents[2]
+            output_dir = (backend_root / "cit" / "final_output").resolve()
+            os.makedirs(str(output_dir), exist_ok=True)
+            if not output_exists(str(output_dir), safe_name):
+                return jsonify({'success': False, 'error': 'validated file not found'}), 404
+            saved_path = os.path.join(str(output_dir), safe_name)
+            saved_name = safe_name
+        except ValueError:
             return jsonify({'error': 'Invalid validated_file'}), 400
-        if not _allowed_file(safe_name):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
-
-        backend_root = Path(__file__).resolve().parents[2]
-        output_dir = (backend_root / "cit" / "final_output").resolve()
-        os.makedirs(str(output_dir), exist_ok=True)
-
-        validated_file_path = (output_dir / os.path.basename(safe_name)).resolve()
-        print("[CIT RUN] validated_file_path =", validated_file_path)
-        print("[CIT RUN] exists =", validated_file_path.exists())
-
-        candidate = str(validated_file_path)
-
-        output_dir_str = str(output_dir)
-        if os.path.commonpath([candidate, output_dir_str]) != output_dir_str:
-            return jsonify({'error': 'Invalid validated_file path'}), 400
-        if not os.path.exists(candidate):
-            return jsonify({
-                'success': False,
-                'error': f'validated file not found: {safe_name}',
-                'searched_path': candidate,
-            }), 404
-
-        saved_path = candidate
-        saved_name = safe_name
     else:
         if not file or not file.filename:
             return jsonify({'error': 'No file uploaded'}), 400
-        if not _allowed_file(file.filename):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
+        try:
+            validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+            file.stream.seek(0)
+        except UploadSecurityError as exc:
+            return jsonify({'error': str(exc)}), 400
 
+    run_id = str(uuid.uuid4())
     run_id = str(uuid.uuid4())
 
     if saved_path is None:
@@ -829,8 +825,7 @@ def run_cit():
         )
         os.makedirs(cit_data_dir, exist_ok=True)
 
-        import werkzeug.utils
-        saved_name = werkzeug.utils.secure_filename(file.filename)
+        saved_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
         saved_path = os.path.join(cit_data_dir, saved_name)
         file.save(saved_path)
 
@@ -961,11 +956,11 @@ def cit_status(run_id):
     return jsonify({"error": "Run ID not found"}), 404
 
 
-# â”€â”€ GET /api/cit/progress/<run_id> â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/cit/progress/<run_id> ───────────────────────────
 
 @cit_bp.route('/api/cit/progress/<run_id>', methods=['GET'])
 def cit_progress(run_id):
-    """Lightweight progress endpoint â€” returns progress % and current step only."""
+    """Lightweight progress endpoint — returns progress % and current step only."""
     status = _run_status.get(run_id)
     if not status:
         return jsonify({'error': 'Run ID not found'}), 404
@@ -977,11 +972,11 @@ def cit_progress(run_id):
     }), 200
 
 
-# â”€â”€ GET /api/cit/summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/cit/summary ──────────────────────────────────────
 
 @cit_bp.route('/api/cit/summary', methods=['GET'])
 def cit_summary():
-    """Overall fraud stats across ALL records â€” for dashboard KPI cards."""
+    """Overall fraud stats across ALL records — for dashboard KPI cards."""
     try:
         import pandas as pd
         engine = get_mysql_engine()
@@ -1001,11 +996,11 @@ def cit_summary():
         return jsonify({'error': str(e)}), 500
 
 
-# â”€â”€ GET /api/cit/results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── GET /api/cit/results ──────────────────────────────────────
 
 @cit_bp.route('/api/cit/results', methods=['GET'])
 def cit_results():
-    """Paginated CIT results â€” for the data table view."""
+    """Paginated CIT results — for the data table view."""
     try:
         import pandas as pd
 
@@ -1036,4 +1031,5 @@ def cit_results():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 

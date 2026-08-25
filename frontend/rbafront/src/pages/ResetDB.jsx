@@ -15,9 +15,13 @@ export default function ResetDB() {
   const [collapsed, setCollapsed] = useState(false);
   const [openMenu, setOpenMenu] = useState(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
+  const [cleanupConfirmChecked, setCleanupConfirmChecked] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [cleanupProcessing, setCleanupProcessing] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [cleanupError, setCleanupError] = useState("");
+  const [cleanupSuccess, setCleanupSuccess] = useState("");
 
   const canResetDb = hasPermission("settings.reset_db");
 
@@ -68,6 +72,65 @@ export default function ResetDB() {
       await showAlert("error", "Reset Failed", message);
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const handleCleanupSubmit = async (event) => {
+    event.preventDefault();
+    setCleanupError("");
+    setCleanupSuccess("");
+
+    if (!cleanupConfirmChecked) {
+      setCleanupError(
+        "Please confirm the cleanup by checking the checkbox before continuing."
+      );
+      return;
+    }
+
+    const confirmResult = await Swal.fire({
+      icon: "warning",
+      title: "Clean temporary files?",
+      text: "This will permanently remove all temporary files from GST, SWT and CIT final output folders. Database records will not be deleted.",
+      showCancelButton: true,
+      confirmButtonText: "Yes, Cleanup Files",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "#6A00FF",
+      cancelButtonColor: "#6c757d",
+    });
+
+    if (!confirmResult.isConfirmed) return;
+
+    setCleanupProcessing(true);
+    try {
+      const res = await API.post("/admin/cleanup-temp-files", { confirm: true });
+      const deleted = res.data?.deleted || {};
+      const totalDeleted = res.data?.total_deleted ?? 0;
+      const failed = Array.isArray(res.data?.failed) ? res.data.failed : [];
+      const message =
+        res.data?.message || "Temporary files cleaned successfully.";
+
+      const details = [
+        message,
+        `GST: ${deleted.gst ?? 0}`,
+        `SWT: ${deleted.swt ?? 0}`,
+        `CIT: ${deleted.cit ?? 0}`,
+        `Total: ${totalDeleted}`,
+      ];
+
+      if (failed.length) {
+        details.push(`Warnings: ${failed.length} file(s) could not be deleted.`);
+      }
+
+      setCleanupSuccess(details.join(" | "));
+      await showAlert("success", "Success", details.join(" "));
+      setCleanupConfirmChecked(false);
+    } catch (err) {
+      const message =
+        err.response?.data?.message || err.message || "Cleanup failed.";
+      setCleanupError(message);
+      await showAlert("error", "Cleanup Failed", message);
+    } finally {
+      setCleanupProcessing(false);
     }
   };
 
@@ -136,6 +199,56 @@ export default function ResetDB() {
                     }
                   >
                     {processing ? "Resetting..." : "Reset Database"}
+                  </Button>
+                </form>
+              </div>
+
+              <div className="reset-db-card mt-4">
+           
+                <form onSubmit={handleCleanupSubmit}>
+                  <div className="form-check mb-3">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      id="confirmCleanupTempFiles"
+                      checked={cleanupConfirmChecked}
+                      disabled={cleanupProcessing}
+                      onChange={(e) =>
+                        setCleanupConfirmChecked(e.target.checked)
+                      }
+                    />
+                    <label
+                      className="form-check-label"
+                      htmlFor="confirmCleanupTempFiles"
+                    >
+                      Are you sure you want to clean temporary encrypted processing files on server?
+                    </label>
+                  </div>
+
+                  {cleanupError && (
+                    <Alert severity="error" className="mb-3">
+                      {cleanupError}
+                    </Alert>
+                  )}
+
+                  {cleanupSuccess && (
+                    <Alert severity="success" className="mb-3">
+                      {cleanupSuccess}
+                    </Alert>
+                  )}
+
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    color="warning"
+                    disabled={cleanupProcessing || !cleanupConfirmChecked}
+                    startIcon={
+                      cleanupProcessing ? (
+                        <CircularProgress size={16} color="inherit" />
+                      ) : null
+                    }
+                  >
+                    {cleanupProcessing ? "Cleaning..." : "CLEANUP TEMP FILES"}
                   </Button>
                 </form>
               </div>

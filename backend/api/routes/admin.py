@@ -1,9 +1,11 @@
-from flask import Blueprint
+from flask import Blueprint, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy import inspect, text
 
 from api.extensions import db
 from config.db_config import get_mysql_engine
+from utils.file_security import cleanup_all_final_output_directories
+from utils.rbac import role_required
 
 bp = Blueprint("admin", __name__)
 
@@ -88,3 +90,39 @@ def reset_db():
                 reset_engine.dispose()
             except Exception:
                 pass
+
+
+@bp.post("/cleanup-temp-files")
+@jwt_required()
+@role_required(["ADMIN"])
+def cleanup_temp_files():
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") is not True:
+        return {
+            "success": False,
+            "message": "Confirmation is required to clean temporary files",
+        }, 400
+
+    try:
+        report = cleanup_all_final_output_directories()
+        failed = report.get("failed") or []
+
+        response = {
+            "success": True,
+            "message": (
+                "Cleanup completed with warnings"
+                if failed
+                else "Temporary files cleaned successfully"
+            ),
+            "deleted": report.get("deleted", {}),
+            "total_deleted": int(report.get("total_deleted", 0) or 0),
+        }
+        if failed:
+            response["failed"] = failed
+
+        return response, 200
+    except Exception as exc:
+        return {
+            "success": False,
+            "message": str(exc),
+        }, 500

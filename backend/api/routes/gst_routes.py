@@ -1,9 +1,9 @@
-﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 #  api/routes/gst_routes.py
 #  POST /api/gst/run
 #  Accepts uploaded file + optional date range
 #  Runs GST fraud pipeline and returns results as JSON
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════
 
 import os
 import sys
@@ -14,7 +14,7 @@ import threading
 import tempfile
 from datetime import datetime
 from utils.upload_logger import log_gst_upload
-from flask import Blueprint, request, jsonify, send_from_directory
+from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
 from sqlalchemy import text
@@ -27,6 +27,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from config.db_config import get_mysql_engine
 from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, log_step
 from utils.auth_helper import get_authenticated_user_id, set_authenticated_user_id_for_context
+from utils.file_security import FinalOutputSecurityError, materialize_output_to_tempfile, output_exists, sanitize_file_reference, sanitize_output_filename, secure_download_response, write_encrypted_output_file, write_encrypted_output_dataframe
+from utils.upload_security import UploadSecurityError, validate_upload_file
 from gst.gst_upload_hook import save_gst_justification_to_db
 
 gst_bp = Blueprint('gst', __name__)
@@ -973,21 +975,21 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
                 if os.path.exists(validated_csv):
                     validated_file_name = f'gst_validated_{stamp}.csv'
                     validated_file_full_path = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                    shutil.copy2(validated_csv, validated_file_full_path)
+                    write_encrypted_output_file(validated_csv, public_output_dir, validated_file_name)
 
                 if os.path.exists(removed_csv):
                     removed_file_name = f'gst_removed_data_{stamp}.csv'
                     removed_file_full_path = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                    shutil.copy2(removed_csv, removed_file_full_path)
+                    write_encrypted_output_file(removed_csv, public_output_dir, removed_file_name)
 
             # Fall back to static filenames when timestamped copies are not created.
             if validated_file_full_path is None:
                 candidate = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                validated_file_full_path = candidate if os.path.exists(candidate) else None
+                validated_file_full_path = candidate if output_exists(public_output_dir, validated_file_name) else None
 
             if removed_file_full_path is None:
                 candidate = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                removed_file_full_path = candidate if os.path.exists(candidate) else None
+                removed_file_full_path = candidate if output_exists(public_output_dir, removed_file_name) else None
 
         except Exception as e:
             print(f"[GST] Error creating timestamped copies: {e}")
@@ -1050,9 +1052,10 @@ def validate_gst():
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    fname = file.filename.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.parquet')):
-        return jsonify({'valid': False, 'error': 'Only .csv or .parquet files are accepted'}), 400
+    try:
+        processing_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+    except UploadSecurityError as exc:
+        return jsonify({'valid': False, 'error': str(exc)}), 400
 
     saved_path_processing = None
     upload_saved_filename = None
@@ -1065,8 +1068,7 @@ def validate_gst():
     )
     os.makedirs(gst_data_dir, exist_ok=True)
 
-    import werkzeug.utils
-    processing_name = werkzeug.utils.secure_filename(file.filename)
+
     saved_path_processing = os.path.join(gst_data_dir, processing_name)
 
     try:
@@ -1192,6 +1194,11 @@ def validate_gst():
         else:
             payload['errors'] = []
 
+        payload['validated_file_path'] = payload.get('validated_file') if payload.get('validated_file') else None
+        payload['removed_data_file_path'] = payload.get('removed_data_file') if payload.get('removed_data_file') else None
+        payload['financial_difference_file_path'] = payload.get('financial_difference_file') if payload.get('financial_difference_file') else None
+        payload['output_dir'] = None
+
         upload_validation_summary_id = None
         engine = None
         try:
@@ -1275,39 +1282,21 @@ def download_gst_file(filename):
     Secure download endpoint for files in backend/gst/final_output.
     """
     try:
-        safe_name = secure_filename(filename)
-        if not safe_name:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        allowed_extensions = {'.csv', '.txt', '.xlsx', '.parquet'}
-        ext = os.path.splitext(safe_name)[1].lower()
-        if ext not in allowed_extensions:
-            return jsonify({"success": False, "message": "Invalid file type"}), 400
-
-        if not safe_name.startswith("gst_"):
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        # NOTE: This file lives under `backend/api/routes/`. We want the real outputs
-        # folder at `backend/gst/final_output` (not `<repo_root>/gst/final_output`).
+        logical_name = sanitize_output_filename(filename, expected_prefix='gst_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'gst', 'final_output'))
         os.makedirs(output_dir, exist_ok=True)
-
-        candidate = os.path.abspath(os.path.join(output_dir, safe_name))
-        print("[DOWNLOAD API] file_path =", candidate)
-
-        if os.path.commonpath([candidate, output_dir]) != output_dir:
-            return jsonify({"success": False, "message": "Invalid filename"}), 400
-
-        if not os.path.exists(candidate):
-            return jsonify({"success": False, "message": "File not found", "filename": safe_name}), 404
-
-        return send_from_directory(output_dir, safe_name, as_attachment=True)
-
-    except Exception as e:
-        print("[DOWNLOAD ERROR]", str(e))
-        return jsonify({"success": False, "message": str(e)}), 500
-
+        if not output_exists(output_dir, logical_name):
+            return jsonify({"success": False, "message": "File not found"}), 404
+        return secure_download_response(output_dir, logical_name)
+    except ValueError:
+        return jsonify({"success": False, "message": "Invalid filename"}), 400
+    except FinalOutputSecurityError as exc:
+        if str(exc) in {"Invalid filename", "Invalid file type"}:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        return jsonify({"success": False, "message": "Secure file handling is not configured"}), 500
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download file"}), 500
 
 def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_validated_file=False):
     """
@@ -1321,6 +1310,12 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
     try:
         # Propagate authenticated user_id into this background thread (NULL-safe).
         set_authenticated_user_id_for_context(current_user_id)
+
+        if is_validated_file:
+            gst_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'final_output'))
+            logical_name = os.path.basename(str(saved_path or ''))
+            with materialize_output_to_tempfile(gst_output_dir, logical_name) as decrypted_input_path:
+                return _run_gst_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
 
         engine = get_mysql_engine()
         log_run_start(engine, run_id, 'GST', filename=os.path.basename(saved_path))
@@ -1437,7 +1432,9 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         else:
             raise FileNotFoundError('GST justification output not found for background DB insert')
 
-        just_df.to_csv(justification_final_path, index=False)
+        logical_justification_name = f'gst_fraud_justification_{export_stamp}.csv'
+        write_encrypted_output_dataframe(just_df, final_output_dir, logical_justification_name)
+        justification_final_path = os.path.join(final_output_dir, logical_justification_name)
 
         total_rows = int(len(just_df.index))
         _set_gst_run_status(run_id, {
@@ -1461,6 +1458,7 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                     run_id=run_id,
                     status_store=_run_status,
                     user_id=current_user_id,
+                    fallback_output_path=justification_final_path,
                 )
                 final_status = _run_status.get(run_id, {}).get('status')
                 if final_status not in {'completed', 'failed'}:
@@ -1542,61 +1540,28 @@ def run_gst():
     saved_name = None
 
     if validated_file:
-        import werkzeug.utils
-        safe_name = werkzeug.utils.secure_filename(validated_file)
-        if not safe_name:
+        try:
+            safe_name = sanitize_file_reference(validated_file)
+            from pathlib import Path
+            backend_root = Path(__file__).resolve().parents[2]
+            output_dir = (backend_root / "gst" / "final_output").resolve()
+            os.makedirs(str(output_dir), exist_ok=True)
+            if not output_exists(str(output_dir), safe_name):
+                return jsonify({'success': False, 'error': 'validated file not found'}), 404
+            saved_path = os.path.join(str(output_dir), safe_name)
+            saved_name = safe_name
+        except ValueError:
             return jsonify({'error': 'Invalid validated_file'}), 400
-        if not _allowed_file(safe_name):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
-
-        # Absolute final_output directory (backend-rooted)
-        # backend/api/routes/gst_routes.py -> parents[2] => backend/
-        from pathlib import Path
-        backend_root = Path(__file__).resolve().parents[2]
-        print("[DEBUG] backend_root =", backend_root)
-
-        output_dir = (backend_root / "gst" / "final_output").resolve()
-        print("[DEBUG] output_dir =", output_dir)
-
-        os.makedirs(str(output_dir), exist_ok=True)
-
-        # If client accidentally sends a full path, use its basename.
-        # Otherwise resolve under final_output.
-        validated_file_path = (
-            validated_file
-            if os.path.isabs(validated_file)
-            else os.path.join(str(output_dir), os.path.basename(safe_name))
-        )
-        candidate = os.path.abspath(validated_file_path)
-
-        print("=" * 80)
-        print("[GST RUN API DEBUG]")
-        print("validated_file =", validated_file)
-        print("safe_name =", safe_name)
-        print("output_dir =", output_dir)
-        print("validated_file_path =", candidate)
-        print("file_exists =", os.path.exists(candidate))
-        print("=" * 80)
-
-        # Ensure no path traversal escapes final_output
-        output_dir_str = str(output_dir)
-        if os.path.commonpath([candidate, output_dir_str]) != output_dir_str:
-            return jsonify({'error': 'Invalid validated_file path'}), 400
-        if not os.path.exists(candidate):
-            return jsonify({
-                'success': False,
-                'error': f'validated file not found: {safe_name}',
-                'searched_path': candidate,
-            }), 404
-
-        saved_path = candidate
-        saved_name = safe_name
     else:
         if not file or not file.filename:
             return jsonify({'error': 'No file uploaded'}), 400
-        if not _allowed_file(file.filename):
-            return jsonify({'error': 'Only .csv or .parquet files are accepted'}), 400
+        try:
+            validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
+            file.stream.seek(0)
+        except UploadSecurityError as exc:
+            return jsonify({'error': str(exc)}), 400
 
+    run_id = str(uuid.uuid4())
     run_id = str(uuid.uuid4())
 
     if saved_path is None:
@@ -1606,8 +1571,7 @@ def run_gst():
         )
         os.makedirs(gst_data_dir, exist_ok=True)
 
-        import werkzeug.utils
-        saved_name = werkzeug.utils.secure_filename(file.filename)
+        saved_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
         saved_path = os.path.join(gst_data_dir, saved_name)
         file.save(saved_path)
 
@@ -1653,7 +1617,7 @@ def gst_status(run_id):
 #  GET /api/gst/progress/<run_id>
 @gst_bp.route('/api/gst/progress/<run_id>', methods=['GET'])
 def gst_progress(run_id):
-    """Lightweight progress endpoint â€” returns progress % and current step only."""
+    """Lightweight progress endpoint — returns progress % and current step only."""
     status = _run_status.get(run_id)
     if not status:
         return jsonify({'error': 'Run ID not found'}), 404
@@ -1669,7 +1633,7 @@ def gst_progress(run_id):
 
 @gst_bp.route('/api/gst/summary', methods=['GET'])
 def gst_summary():
-    """Overall fraud stats across ALL records â€” for dashboard KPI cards."""
+    """Overall fraud stats across ALL records — for dashboard KPI cards."""
     try:
         import pandas as pd
         engine = get_mysql_engine()
@@ -1693,7 +1657,7 @@ def gst_summary():
 
 @gst_bp.route('/api/gst/results', methods=['GET'])
 def gst_results():
-    """Paginated GST results â€” for the data table view."""
+    """Paginated GST results — for the data table view."""
     try:
         import pandas as pd
 
@@ -1724,5 +1688,8 @@ def gst_results():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
 
 

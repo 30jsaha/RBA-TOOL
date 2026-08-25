@@ -339,6 +339,7 @@ SAMPLE_FILES = {
 
 
 @bp.get("/get-sample-files")
+@jwt_required()
 def get_sample_files():
     return jsonify({
         ft: {
@@ -350,6 +351,7 @@ def get_sample_files():
 
 
 @bp.get("/download/sample/<file_type>")
+@jwt_required()
 def download_sample(file_type):
 
     if file_type not in SAMPLE_FILES:
