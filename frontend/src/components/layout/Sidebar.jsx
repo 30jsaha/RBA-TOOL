@@ -102,10 +102,8 @@ export default function Sidebar() {
       return;
     }
 
-    if (!location.pathname.startsWith("/settings/conflicts") && openSettingsSub === "conflicts") {
-      setOpenSettingsSub(null);
-    }
-  }, [location.pathname, openSettingsSub]);
+    setOpenSettingsSub(null);
+  }, [location.pathname]);
 
   const toggleMenu = (menu) => {
     if (collapsed) return;
@@ -293,3 +291,4 @@ export default function Sidebar() {
     </div>
   );
 }
+
