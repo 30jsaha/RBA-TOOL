@@ -2,28 +2,28 @@
 SWT FRAUD DETECTION PIPELINE - EXECUTION SUMMARY
 ================================================================================
 
-Execution Date: 2026-08-25 14:39:44
+Execution Date: 2026-08-25 18:39:22
 Total Execution Time: N/A
 
 --------------------------------------------------------------------------------
 PIPELINE RESULTS
 --------------------------------------------------------------------------------
 
-Total Records Processed: 48
-Fraud Detected: 38 (79.17%)
-Non-Fraud: 10
+Total Records Processed: 123,913
+Fraud Detected: 5,158 (4.16%)
+Non-Fraud: 118,755
 
 --------------------------------------------------------------------------------
 STEP EXECUTION TIMES
 --------------------------------------------------------------------------------
 Step                                          Time            %         
 --------------------------------------------------------------------------------
-Feature Engineering & Rule Checking           3.38 sec        337.7%
-Fraud Justification Generation                3.98 sec        398.2%
+Feature Engineering & Rule Checking           7.75 sec        774.7%
+Fraud Justification Generation                12.05 sec       1205.5%
 
 --------------------------------------------------------------------------------
 OUTPUT FILES GENERATED
 --------------------------------------------------------------------------------
-  swt_data_after_rule_checking.parquet: 0.01 MB
-  swt_fraud_justification.csv: 0.02 MB
-  swt_fraud_justification.parquet: 0.02 MB
+  swt_data_after_rule_checking.parquet: 3.35 MB
+  swt_fraud_justification.csv: 32.90 MB
+  swt_fraud_justification.parquet: 3.46 MB
