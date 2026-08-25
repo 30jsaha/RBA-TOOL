@@ -146,7 +146,28 @@ def get_current_security_context():
             ),
             {"user_id": user_id},
         ).fetchall()
+<<<<<<< HEAD
     except SQLAlchemyError:
+=======
+
+        context = {
+            "user": {
+                "id": int(user_row["id"]),
+                "email": user_row.get("email"),
+                "full_name": user_row.get("full_name"),
+            },
+            "roles": [{"id": int(row["id"]), "name": row["name"]} for row in (role_rows or [])],
+            "permissions": {str(row[0]) for row in (permission_rows or []) if row and row[0]},
+            "is_active": bool(user_row.get("is_active", True)),
+        }
+        g._rbac_security_context = context
+        return context
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+>>>>>>> 15741ab83f8334f42200dd19ac868efc21f593f7
         context = {
             "user": None,
             "roles": [],
@@ -156,6 +177,7 @@ def get_current_security_context():
         g._rbac_security_context = context
         return context
 
+<<<<<<< HEAD
     context = {
         "user": {
             "id": int(user_row["id"]),
@@ -169,6 +191,8 @@ def get_current_security_context():
     g._rbac_security_context = context
     return context
 
+=======
+>>>>>>> 15741ab83f8334f42200dd19ac868efc21f593f7
 
 def has_any_permission(*permission_codes):
     required_codes = {code for code in permission_codes if code}

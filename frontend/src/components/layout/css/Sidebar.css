@@ -1,0 +1,156 @@
+/* ===========================
+   SIDEBAR – PNG Corporate Gradient UI
+   =========================== */
+
+.sidebar {
+  position: fixed;                           /* ✅ Sidebar starts below navbar */
+  left: 0;
+  width: 250px;
+  max-height: 100%;
+  /* height: calc(100vh - 56px); */
+  height: 100vh;
+  padding: 1rem;
+  background: linear-gradient(180deg, #1B2B74 0%, #6A00FF 100%);
+  background-attachment: fixed;
+  border-right: 2px solid rgba(255, 255, 255, 0.568);
+  box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+
+  color: var(--text-light);
+
+  overflow-y: auto;
+  overflow-x: visible !important;       /* ✅ Allow submenu overlay */
+  transition: width 0.28s ease-in-out;
+  z-index: 9999;
+}
+
+/* ------------ HEADER (logo + collapse btn) ---------------- */
+.sidebar-header {
+  padding: 12px 14px;
+  border-bottom: 2px solid rgba(29, 3, 66, 0.4);
+  backdrop-filter: blur(4px);
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ========== COLLAPSE STYLES ========== */
+.sidebar.collapsed {
+  width: 75px !important;               /* ✅ Requested width */
+}
+
+/* ✅ Hide logo + text when collapsed */
+.sidebar.collapsed .sidebar-logo,
+.sidebar.collapsed .label {
+  display: none !important;
+}
+
+/* ✅ Center icons when collapsed */
+.sidebar.collapsed .nav-link {
+  justify-content: center !important;
+}
+
+/* ✅ Hide right chevron when collapsed */
+.sidebar.collapsed .arrow {
+  display: none !important;
+}
+
+/* ------------ LINKS ---------------- */
+.nav-link {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  color: #ffffff;
+  transition: all 0.25s ease;
+  position: relative;
+}
+
+.nav-link svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Hover */
+.nav-link:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateX(4px);
+}
+
+/* Active item (PNG Red + Gold) */
+.nav-link.active {
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  border-left: 4px solid var(--accent);
+}
+
+/* ------------ COLLAPSE BUTTON ---------------- */
+.collapse-btn,
+.btn.btn-outline-light {
+  border: none !important;
+  background: rgba(255, 255, 255, 0.28);
+  padding: 6px;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+/* ========================================
+   SUBMENU (EXPANDED)
+   ======================================== */
+.submenu {
+  padding-left: 12px;
+  margin-top: 5px;
+  transition: all 0.2s ease-in-out;
+}
+
+.submenu-item {
+  margin-bottom: 6px;
+}
+
+/* ========================================
+   SUBMENU OVERLAY (WHEN COLLAPSED)
+   ======================================== */
+.submenu-container.submenu-overlay {
+  position: absolute;
+  left: 75px;                           /* ✅ Show to the right of collapsed sidebar */
+  background: #1B2B74;
+  padding: 8px 14px;
+  min-width: 185px;
+  border-radius: 8px;
+  z-index: 99999;
+
+  animation: fadeIn 0.18s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Scrollbar */
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 3px;
+}
+
+/* Shift content when sidebar collapses */
+.main-content {
+  margin-left: 250px;
+  transition: margin-left 0.3s ease;
+}
+.sidebar.collapsed ~ .main-content {
+  margin-left: 75px;
+}

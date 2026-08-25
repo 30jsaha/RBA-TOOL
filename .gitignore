@@ -68,6 +68,11 @@ backend/segmented/*
 backend/temp_outputs/*
 !backend/temp_outputs/.gitkeep
 backend/final_output/*
+
+backend/gst/final_output/*
+backend/swt/final_output/*
+backend/cit/final_output/*
+
 !backend/final_output/.gitkeep
 
 # Temporary & Office Files
@@ -94,3 +99,5 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+RAW_FILES_ALL_v2

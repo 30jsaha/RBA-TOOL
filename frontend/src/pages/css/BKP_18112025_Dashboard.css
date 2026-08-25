@@ -1,0 +1,165 @@
+/*******************************
+  MAIN WRAPPER
+*******************************/
+.main-content {
+  background: var(--body-bg);
+  color: var(--text-dark);
+  padding: 1.5rem;
+  min-height: 100vh;
+}
+
+/*******************************
+  PAGE TITLE
+*******************************/
+.header-title-page {
+  font-size: 1.8rem;
+  font-weight: 700;
+  border-left: 6px solid var(--primary);
+  padding-left: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+/*******************************
+  WIDGETS
+*******************************/
+.widget-main-div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.widget-card {
+  background: var(--card-bg);
+  border-left: 6px solid var(--primary);
+  padding: 1rem;
+  border-radius: 10px;
+  transition: 0.3s;
+}
+
+.widget-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 7px 25px rgba(0, 0, 0, 0.2);
+}
+
+/*******************************
+  CHART BOX
+*******************************/
+.box-background {
+  background: #fff;
+  border: 1px solid #e6e6e6;
+  border-radius: 12px;
+}
+
+/*******************************
+  SCROLLBAR
+*******************************/
+.main-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.main-content::-webkit-scrollbar-thumb {
+  background: var(--primary);
+}
+
+/*******************************
+  RISK PROFILING ROW
+*******************************/
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.summary-row::-webkit-scrollbar {
+  height: 6px;
+}
+
+.summary-row::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: 4px;
+}
+
+/*******************************
+  SUMMARY CARDS
+*******************************/
+.summary-card {
+  min-width: 260px;
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.09);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  transition: 0.25s ease;
+}
+
+.summary-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+}
+
+.summary-header {
+  background: linear-gradient(90deg, #1b2b74, #6a00ff);
+  padding: 10px 14px;
+  font-size: 0.95rem;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.summary-footer {
+  padding: 6px 14px;
+  background: #f7f7f7;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-top: 2px solid rgba(106, 0, 255, 0.3);
+}
+
+/*******************************
+  TEXT COLOR UTILITY
+*******************************/
+.text-red { color: var(--primary) !important; }
+.text-green { color: var(--success) !important; }
+.text-gold { color: var(--accent) !important; }
+
+/*******************************
+  AUTOCOMPLETE INPUT FIX
+*******************************/
+.MuiAutocomplete-inputRoot {
+  padding-right: 35px !important;
+}
+
+/*******************************
+  SAFE MUI FONT OVERRIDES
+  (NO FLOATING LABEL BREAK)
+*******************************/
+.main-content .MuiInputBase-root,
+.main-content .MuiMenuItem-root {
+  font-size: 0.9rem;
+}
+
+.main-content .MuiInputLabel-root {
+  font-size: 0.9rem;
+}
+
+/*******************************
+  FINAL NOTE:
+  ✔ No !important on labels
+  ✔ No transform breaking
+*******************************/
+
+/* Allow custom right-center Leaflet panel */
+.leaflet-control-topright {
+  position: absolute !important;
+  right: 10px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  z-index: 9999 !important;
+}
+
+.info.legend {
+  line-height: 18px;
+  color: #000;
+}
+

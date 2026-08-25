@@ -1,0 +1,116 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap");
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+html, body {
+  font-family: "Poppins", sans-serif;
+}
+
+/* background wrapper */
+.login-page {
+  min-height: 100vh;          /* full height */
+  width: 100vw;               /* use viewport width, not parent width */
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  background-attachment: fixed;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  position: relative;
+  color: #fff;
+}
+
+/* logo top-left */
+.login-logo {
+  position: absolute;
+  top: 20px;
+  left: 30px;
+}
+.login-logo img {
+  width: 60px;
+  height: auto;
+}
+
+/* login container */
+.login-container {
+  border-radius: 25px 0 0 25px;
+  flex: 1;
+  display: flex;
+  margin-right: 40%;
+  align-items: flex-start;;
+}
+
+/* login box */
+.login-box {
+  background: rgba(18, 18, 18, 0.55); /*more contrast */
+  padding: 2rem;
+  border-radius: 15px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+}
+
+.login-title {
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+/* inputs */
+.form-input-login {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.6rem;
+}
+.form-input-login:focus {
+  border-color: #0d6efd;
+  outline: none;
+  box-shadow: none;
+}
+
+/* password eye icon */
+.password-toggle-icon {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  color: #bbb;
+}
+
+.back-to-login, .forgot-password {
+  color: #bbb;
+  font-size: .875rem;
+  text-decoration: none;
+}
+.forgot-password:hover {
+  text-decoration: underline;
+}
+
+/* login button */
+.login-button {
+  align-items: center;
+  background-color: #5671ff !important;
+  border-color: #5671ff !important;
+  color: #fff;
+  display: flex;
+  font-size: 1rem;
+  justify-content: center;
+  min-height: 53px;
+  border-radius: 8px;
+}
+.login-button:hover {
+  background-color: #0b5ed7;
+}
+
+/* Responsive: center form on mobile */
+@media (max-width: 768px) {
+  .login-container {
+    margin-left: 0 !important;
+    justify-content: center;
+  }
+}
+

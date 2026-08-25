@@ -1,0 +1,26 @@
+.conflicts-table {
+  min-width: 1100px;
+  table-layout: fixed;
+}
+
+.conflicts-table th,
+.conflicts-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.conflicts-table td:nth-child(3),
+.conflicts-table td:nth-child(6) {
+  white-space: normal;
+}
+
+.conflicts-table td:nth-child(6) span {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-responsive {
+  overflow-x: auto;
+}

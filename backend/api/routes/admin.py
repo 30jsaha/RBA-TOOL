@@ -35,6 +35,7 @@ def reset_db():
 
     try:
         try:
+            db.session.rollback()
             db.session.remove()
         except Exception:
             pass
@@ -75,12 +76,18 @@ def reset_db():
             "message": "Database reset completed successfully",
         }, 200
     except Exception as e:
+        try:
+            db.session.rollback()
+            db.session.remove()
+        except Exception:
+            pass
         return {
             "status": "error",
             "message": str(e),
         }, 500
     finally:
         try:
+            db.session.rollback()
             db.session.remove()
         except Exception:
             pass

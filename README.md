@@ -27,12 +27,11 @@ RBA-TOOL/
 │   └── README.md             # Backend detailed documentation
 │
 ├── frontend/                 # React Single Page Application (SPA)
-│   ├── rbafront/             # Vite + React 19 Frontend application
-│   │   ├── src/              # React components, pages, hooks & services
-│   │   ├── public/           # Static assets
-│   │   ├── package.json      # Dependencies and scripts
-│   │   ├── vite.config.js    # Vite configuration
-│   │   └── .env.example      # Environment variable template for frontend
+│   ├── src/                  # React components, pages, hooks & services
+│   ├── public/               # Static assets
+│   ├── package.json          # Dependencies and scripts
+│   ├── vite.config.js        # Vite configuration
+│   ├── .env.example          # Environment variable template for frontend
 │   └── README.md             # Frontend detailed documentation
 │
 ├── .gitignore                # Root Git ignore configuration
@@ -113,7 +112,7 @@ RBA-TOOL/
 
 1. **Navigate to frontend project directory**:
    ```bash
-   cd frontend/rbafront
+   cd frontend
    ```
 
 2. **Install Node Dependencies**:
