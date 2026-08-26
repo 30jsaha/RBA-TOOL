@@ -148,7 +148,6 @@ def get_current_security_context():
         ).fetchall()
     except Exception:
         try:
-            db.session.rollback()
             db.session.remove()
         except Exception:
             pass

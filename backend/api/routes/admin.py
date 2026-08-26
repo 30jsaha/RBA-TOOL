@@ -35,8 +35,10 @@ def reset_db():
 
     try:
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
+            if hasattr(db, "_Session") and db._Session is not None:
+                db._Session.remove()
             if hasattr(db, "engine") and db.engine is not None:
                 db.engine.dispose()
         except Exception:
@@ -63,24 +65,31 @@ def reset_db():
                     if table not in existing_tables:
                         continue
 
-                    conn.execute(text(f"DELETE FROM `{table}`"))
+                    try:
+                        conn.execute(text(f"DELETE FROM `{table}`"))
+                    except Exception as err:
+                        print(f"[RESET_DB] Failed DELETE on `{table}`: {err}")
 
                     try:
                         conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
                     except Exception:
-                        # Tables without AUTO_INCREMENT do not need a reset.
                         pass
             finally:
-                conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+                try:
+                    conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+                except Exception:
+                    pass
 
         return {
             "status": "success",
             "message": "Database reset completed successfully",
         }, 200
     except Exception as e:
+        import traceback
+        print(f"[RESET_DB ERROR]\n{traceback.format_exc()}")
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
         except Exception:
             pass
         return {
@@ -89,8 +98,8 @@ def reset_db():
         }, 500
     finally:
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
         except Exception:
             pass
 
