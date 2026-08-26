@@ -50,27 +50,17 @@ class _DB:
         def _ensure_clean_session():
             try:
                 if self._Session is not None:
-                    self._Session.rollback()
                     self._Session.remove()
             except Exception:
-                try:
-                    if self._Session is not None:
-                        self._Session.remove()
-                except Exception:
-                    pass
+                pass
 
         @app.teardown_appcontext
         def _shutdown_session(exception=None):
             try:
                 if self._Session is not None:
-                    self._Session.rollback()
                     self._Session.remove()
             except Exception:
-                try:
-                    if self._Session is not None:
-                        self._Session.remove()
-                except Exception:
-                    pass
+                pass
 
 
 db = _DB()
