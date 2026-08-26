@@ -1,4 +1,4 @@
-from flask import Blueprint, request
+from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
 from sqlalchemy import inspect, text
 
@@ -80,10 +80,10 @@ def reset_db():
                 except Exception:
                     pass
 
-        return {
+        return jsonify({
             "status": "success",
             "message": "Database reset completed successfully",
-        }, 200
+        }), 200
     except Exception as e:
         import traceback
         print(f"[RESET_DB ERROR]\n{traceback.format_exc()}")
@@ -92,10 +92,10 @@ def reset_db():
                 db.session.remove()
         except Exception:
             pass
-        return {
+        return jsonify({
             "status": "error",
             "message": str(e),
-        }, 500
+        }), 500
     finally:
         try:
             if hasattr(db, "session") and db.session is not None:
@@ -116,10 +116,10 @@ def reset_db():
 def cleanup_temp_files():
     data = request.get_json(silent=True) or {}
     if data.get("confirm") is not True:
-        return {
+        return jsonify({
             "success": False,
             "message": "Confirmation is required to clean temporary files",
-        }, 400
+        }), 400
 
     try:
         report = cleanup_all_final_output_directories()
@@ -138,9 +138,9 @@ def cleanup_temp_files():
         if failed:
             response["failed"] = failed
 
-        return response, 200
+        return jsonify(response), 200
     except Exception as exc:
-        return {
+        return jsonify({
             "success": False,
             "message": str(exc),
-        }, 500
+        }), 500
