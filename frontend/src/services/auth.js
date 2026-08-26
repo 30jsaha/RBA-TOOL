@@ -173,7 +173,7 @@ export async function restoreSession() {
 
 export async function login(email, password) {
   try {
-    const res = await authClient.post("/login", { email, password });
+    const res = await authClient.post("/auth/login", { email, password });
 
     const { access, user } = res.data || {};
     setAccessToken(access);
