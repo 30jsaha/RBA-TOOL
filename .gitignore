@@ -72,6 +72,7 @@ backend/final_output/*
 backend/gst/final_output/*
 backend/swt/final_output/*
 backend/cit/final_output/*
+backend/reports/*
 
 !backend/final_output/.gitkeep
 
