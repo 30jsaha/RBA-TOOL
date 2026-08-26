@@ -37,6 +37,8 @@ def reset_db():
         try:
             db.session.rollback()
             db.session.remove()
+            if hasattr(db, "engine") and db.engine is not None:
+                db.engine.dispose()
         except Exception:
             pass
 
