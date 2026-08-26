@@ -1,4 +1,4 @@
-# script_1_data_preprocessing
+﻿# script_1_data_preprocessing
 import numpy as np
 import pandas as pd
 import os
@@ -363,8 +363,17 @@ def create_aggregated_columns(cit):
         print("Created column: total_foreign_taxes_paid")
     
     if 'total_resource_royalty_development' not in cit.columns:
-        cit['total_resource_royalty_development'] = cit['resource_royalty_and_devel']
-        print("Created column: total_resource_royalty_development")
+        if 'resource_royalty_and_devel' in cit.columns:
+            cit['total_resource_royalty_development'] = cit['resource_royalty_and_devel']
+            print("Created column: total_resource_royalty_development")
+        elif 'res_royalty_and_dev_levy' in cit.columns:
+            # Some standardized CIT inputs retain the royalty/development value
+            # only under the levy-style column name.
+            cit['total_resource_royalty_development'] = cit['res_royalty_and_dev_levy']
+            print("Created column: total_resource_royalty_development from res_royalty_and_dev_levy")
+        else:
+            cit['total_resource_royalty_development'] = 0
+            print("Created column: total_resource_royalty_development with default 0")
     
     # 6. Balance sheet aggregations
     if 'total_current_assets' not in cit.columns:
@@ -823,5 +832,6 @@ def main():
 
 if __name__ == "__main__":
     preprocessed_data = main()
+
 
 
