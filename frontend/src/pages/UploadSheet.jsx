@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -56,15 +56,15 @@ const formatPipelineStatus = ({ status, step, insertedRows, totalRows, insertPer
 
   if (normalizedStatus === "inserting") {
     if (insertedRows > 0 && totalRows > 0) {
-      return `Database Insert: ${insertedRows} / ${totalRows} (${insertPercent || 0}%)`;
+      return `Database Insert: ${insertedRows.toLocaleString()} / ${totalRows.toLocaleString()} (${insertPercent || 0}%)`;
     }
     return "Database insert in progress...";
   }
 
   if (rawStep) {
-    if (normalizedStep.includes("prediction")) return `Prediction running... ${rawStep}`;
-    if (normalizedStep.includes("justification")) return `Generating fraud justification... ${rawStep}`;
-    if (normalizedStep.includes("queue")) return `Queued... ${rawStep}`;
+    if (normalizedStep.includes("prediction")) return `Prediction running... (${rawStep})`;
+    if (normalizedStep.includes("justification")) return `Generating fraud justification... (${rawStep})`;
+    if (normalizedStep === "queued") return "Queued...";
     return rawStep;
   }
 

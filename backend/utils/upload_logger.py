@@ -32,13 +32,17 @@ def setup_upload_logger():
 
     logger.setLevel(logging.INFO)
 
-    handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
-    formatter = logging.Formatter(
-        fmt='%(asctime)s | %(levelname)s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
+        handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
+        formatter = logging.Formatter(
+            fmt='%(asctime)s | %(levelname)s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    except Exception as exc:
+        print(f"[UPLOAD_LOGGER] Warning: FileHandler creation failed: {exc}")
 
     return logger
 
