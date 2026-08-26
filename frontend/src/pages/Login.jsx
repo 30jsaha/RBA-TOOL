@@ -1,6 +1,7 @@
-﻿import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { login, setAccessToken } from "../services/auth";
+﻿import { useEffect, useState } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
+import { setAccessToken } from "../services/auth";
+import { useAuth } from "../context/useAuth";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import "./css/Login.css";
 import Logo from "../assets/img/logo.png";
@@ -8,6 +9,7 @@ import LoginBgNew from "../assets/img/login-bg-new-v2.jpg";
 
 export default function Login() {
   const navigate = useNavigate();
+  const { authStatus, login } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
@@ -46,6 +48,10 @@ export default function Login() {
       navigate("/common-dashboard");
     }
   }, [navigate]);
+
+  if (authStatus === "authenticated") {
+    return <Navigate to="/common-dashboard" replace />;
+  }
 
   return (
     <div
@@ -111,3 +117,4 @@ export default function Login() {
     </div>
   );
 }
+

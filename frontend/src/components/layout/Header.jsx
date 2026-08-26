@@ -1,9 +1,11 @@
 ﻿import AvtarImage from "../../assets/user/avatar-8.jpg";
 import { IoMdLogOut } from "react-icons/io";
 
-import { logout } from "../../services/auth";
+import { useAuth } from "../../context/useAuth";
 
 export default function Header() {
+  const { logout } = useAuth();
+
   const handleLogout = async () => {
     await logout();
     window.location.href = "/";
@@ -32,3 +34,4 @@ export default function Header() {
     </nav>
   );
 }
+

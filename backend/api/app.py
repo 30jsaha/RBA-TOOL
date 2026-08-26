@@ -1,9 +1,9 @@
-# ══════════════════════════════════════════════════════════════
+﻿# =================================================================================
 #  api/app.py
 #  Flask API entrypoint
 #  Run: python api/app.py
 #  All endpoints available at http://localhost:5000
-# ══════════════════════════════════════════════════════════════
+# =================================================================================
 
 import os
 import sys
@@ -16,7 +16,7 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-# ── Allow imports from project root
+# â”€â”€ Allow imports from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -53,22 +53,34 @@ CORS(
                 "origins": [
                     "http://13.55.253.247",
                     "http://13.55.253.247:80",
+                    "http://localhost:4173",
+                    "http://127.0.0.1:4173",
                     "http://localhost:5173",
-                    "http://127.0.0.1:5173"
+                    "http://127.0.0.1:5173",
+                    "http://localhost:5174",
+                    "http://127.0.0.1:5174",
+                    "http://localhost:5175",
+                    "http://127.0.0.1:5175"
                 ],
                 "supports_credentials": True,
-                "allow_headers": ["Content-Type", "Authorization"],
+                "allow_headers": ["Content-Type", "Authorization", "X-CSRF-TOKEN"],
                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
             },
-            r"/outputs/*": {  # ← ADD THIS for file downloads
+            r"/outputs/*": {  # â† ADD THIS for file downloads
                 "origins": [
                     "http://13.55.253.247",
                     "http://13.55.253.247:80",
+                    "http://localhost:4173",
+                    "http://127.0.0.1:4173",
                     "http://localhost:5173",
-                    "http://127.0.0.1:5173"
+                    "http://127.0.0.1:5173",
+                    "http://localhost:5174",
+                    "http://127.0.0.1:5174",
+                    "http://localhost:5175",
+                    "http://127.0.0.1:5175"
                 ],
                 "supports_credentials": True,
-                "allow_headers": ["Content-Type", "Authorization"],
+                "allow_headers": ["Content-Type", "Authorization", "X-CSRF-TOKEN"],
                 "methods": ["GET", "OPTIONS"]  # Only GET and OPTIONS needed for downloads
             }
         }
@@ -81,12 +93,12 @@ app.config.setdefault("CACHE_DEFAULT_TIMEOUT", 300)
 app.config.setdefault("CACHE_THRESHOLD", 512)
 cache.init_app(app)
 
-# ── Auth (ported from old-backend) ──────────────────────────────
+# â”€â”€ Auth (ported from old-backend) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Centralized middleware protects all `/api/*` routes except allowlisted.
 from auth import init_auth
 init_auth(app)
 
-# ── Register route blueprints
+# â”€â”€ Register route blueprints
 from api.routes import gst_routes, cit_routes, swt_routes, segmentation as segmentation_routes
 from api.routes.logs_routes        import logs_bp
 from api.routes.multi_tax_routes   import multi_tax_bp
@@ -125,7 +137,7 @@ app.register_blueprint(logs_bp)
 app.register_blueprint(multi_tax_bp)
 app.register_blueprint(integration_bp)
 app.register_blueprint(validate_bp)         
-# ── Auto-create all DB tables on startup
+# â”€â”€ Auto-create all DB tables on startup
 from config.db_init import init_db
 init_db()
 
@@ -151,18 +163,18 @@ app.register_blueprint(role_management_bp)
 app.register_blueprint(conflicts_admin_bp)
 app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
-# ── Serve static outputs (CORS Preflight target)
+# â”€â”€ Serve static outputs (CORS Preflight target)
 @app.route('/outputs/<path:filename>', methods=['GET'])
 def download_output_file(filename):
     return send_from_directory(get_backend_storage_dir("outputs"), filename, as_attachment=True)
 
-# ── Health check
+# â”€â”€ Health check
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'message': 'Tax Fraud Detection API is running'}), 200
 
 
-# ── List all routes (useful during dev)
+# â”€â”€ List all routes (useful during dev)
 @app.after_request
 def apply_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -216,10 +228,15 @@ if __name__ == '__main__':
     print("          GET  /api/integration/logs?tax_type=GST")
     print("="*60 + "\n")
 
-    app.run(debug=_env_flag("FLASK_DEBUG") or _env_flag("DEBUG"), port=5000, threaded=True)
+    app.run(
+        host=os.getenv("FLASK_HOST", "::"),
+        debug=_env_flag("FLASK_DEBUG") or _env_flag("DEBUG"),
+        port=int(os.getenv("FLASK_PORT", "5000")),
+        threaded=True,
+    )
 
 
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  That's it. All 8 new endpoints are now live:
 #
 #  Static step definitions (no auth, no DB):
@@ -236,4 +253,4 @@ if __name__ == '__main__':
 #    POST /api/gst/validate   (multipart/form-data, field: file)
 #    POST /api/cit/validate   (multipart/form-data, field: file)
 #    POST /api/swt/validate   (multipart/form-data, field: file)
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

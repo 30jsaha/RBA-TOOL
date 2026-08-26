@@ -1,7 +1,6 @@
-﻿import { useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+﻿import { Navigate } from "react-router-dom";
 
-import { ensureCurrentUser, getUser } from "../../services/auth";
+import { useAuth } from "../../context/useAuth";
 
 const hasRoleAccess = (user, requiredRoles) => {
   if (!Array.isArray(requiredRoles) || requiredRoles.length === 0) return true;
@@ -21,31 +20,13 @@ const hasPermissionAccess = (user, permission) => {
 };
 
 export default function ProtectedRoute({ children, requiredRoles, permission, redirectTo = "/common-dashboard" }) {
-  const [user, setUser] = useState(() => getUser());
-  const [loading, setLoading] = useState(true);
+  const { authStatus, user } = useAuth();
 
-  useEffect(() => {
-    let active = true;
-
-    ensureCurrentUser()
-      .then((resolvedUser) => {
-        if (!active) return;
-        setUser(resolvedUser);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  if (loading) {
+  if (authStatus === "initializing") {
     return null;
   }
 
-  if (!user) {
+  if (authStatus !== "authenticated" || !user) {
     return <Navigate to="/" replace />;
   }
 
@@ -55,3 +36,4 @@ export default function ProtectedRoute({ children, requiredRoles, permission, re
 
   return children;
 }
+

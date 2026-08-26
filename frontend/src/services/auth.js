@@ -45,8 +45,8 @@ const normalizeSessionUser = (payload) => {
   const permissions = Array.isArray(payload.permissions)
     ? [...new Set(payload.permissions.filter(Boolean))]
     : Array.isArray(user.permissions)
-    ? [...new Set(user.permissions.filter(Boolean))]
-    : [];
+      ? [...new Set(user.permissions.filter(Boolean))]
+      : [];
 
   return {
     id: user.id ?? payload.id ?? null,
@@ -158,6 +158,15 @@ export async function ensureCurrentUser() {
   try {
     return await currentUserRequest;
   } catch {
+    return null;
+  }
+}
+
+export async function restoreSession() {
+  try {
+    return await ensureCurrentUser();
+  } catch {
+    clearSession();
     return null;
   }
 }
