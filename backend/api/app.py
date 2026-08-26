@@ -229,7 +229,11 @@ if __name__ == '__main__':
     print("="*60 + "\n")
 
     app.run(
-        host=os.getenv("FLASK_HOST", "::"),
+        # Windows does not reliably dual-stack an IPv6 wildcard listener.  Vite's
+        # `localhost` proxy commonly resolves to 127.0.0.1, so use IPv4 loopback
+        # by default for local development. Deployments can set FLASK_HOST as
+        # needed (for example, 0.0.0.0 or ::).
+        host=os.getenv("FLASK_HOST", "127.0.0.1"),
         debug=_env_flag("FLASK_DEBUG") or _env_flag("DEBUG"),
         port=int(os.getenv("FLASK_PORT", "5000")),
         threaded=True,
