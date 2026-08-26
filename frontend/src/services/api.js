@@ -27,17 +27,41 @@ const redirectToLogin = () => {
   window.location.assign("/");
 };
 
+const isAuthEndpointRequest = (url) => {
+  const requestUrl = String(url || "");
+  return (
+    requestUrl.includes("/auth/login") ||
+    requestUrl.includes("/login") ||
+    requestUrl.includes("/auth/refresh") ||
+    requestUrl.includes("/auth/logout")
+  );
+};
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
 });
 
-api.interceptors.request.use((config) => {
-  const token = getAccessToken();
+api.interceptors.request.use(async (config) => {
+  config.headers = config.headers || {};
+
+  if (config.headers.Authorization) {
+    return config;
+  }
+
+  let token = getToken();
+  if (!token && !isAuthEndpointRequest(config.url)) {
+    try {
+      token = await refreshAccessToken();
+    } catch {
+      token = null;
+    }
+  }
+
   if (token) {
-    config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
+
   return config;
 });
 
@@ -54,12 +78,7 @@ api.interceptors.response.use(
         (message.toLowerCase().includes("missing or invalid token") ||
           message.toLowerCase().includes("token expired")));
 
-    const requestUrl = String(originalRequest?.url || "");
-    const isAuthEndpoint =
-      requestUrl.includes("/auth/login") ||
-      requestUrl.includes("/login") ||
-      requestUrl.includes("/auth/refresh") ||
-      requestUrl.includes("/auth/logout");
+    const isAuthEndpoint = isAuthEndpointRequest(originalRequest?.url);
 
     if (isAuthFailure && !originalRequest._retry && !isAuthEndpoint) {
       originalRequest._retry = true;
