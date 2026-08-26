@@ -1,23 +1,10 @@
-// src/components/common/DataTableExport.jsx
+﻿import { Button, Stack } from "@mui/material";
+import TableChartIcon from "@mui/icons-material/TableChart";
 
-import { Button, Stack } from "@mui/material";
-import DescriptionIcon from "@mui/icons-material/Description";  // Excel icon
-import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
+import { exportToCSV } from "../../utils/exportUtils.jsx";
 
-import { exportToExcel, exportToCSV } from "../../utils/exportUtils.jsx";
-
-export default function DataTableExport({ data, filename, emptyMessage, showExcel = true }) {
+export default function DataTableExport({ data, filename, emptyMessage }) {
   const hasData = Array.isArray(data) && data.length > 0;
-
-  const handleExportExcel = async () => {
-    if (!hasData) {
-      if (emptyMessage) {
-        alert(emptyMessage);
-      }
-      return;
-    }
-    await exportToExcel(data, filename);
-  };
 
   const handleExportCSV = () => {
     if (!hasData) {
@@ -31,19 +18,6 @@ export default function DataTableExport({ data, filename, emptyMessage, showExce
 
   return (
     <Stack direction="row" spacing={1}>
-      {showExcel ? (
-        <Button
-          variant="contained"
-          size="small"
-          color="success"
-          startIcon={<DescriptionIcon />}
-          onClick={handleExportExcel}
-          className="hideme"
-        >
-          Excel
-        </Button>
-      ) : null}
-
       <Button
         variant="outlined"
         size="small"
@@ -57,4 +31,3 @@ export default function DataTableExport({ data, filename, emptyMessage, showExce
     </Stack>
   );
 }
-

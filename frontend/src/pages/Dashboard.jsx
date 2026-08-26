@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 
@@ -222,7 +222,6 @@ export default function Dashboard() {
   };
 
   // const BASE = "http://127.0.0.1:5000/api";
-  // const accessToken = localStorage.getItem("access");
 
   // const axiosInstance = axios.create({
   //   baseURL: BASE,

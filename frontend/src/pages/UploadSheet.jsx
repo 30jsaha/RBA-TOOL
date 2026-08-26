@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+﻿import { useState, useRef, useEffect } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -30,6 +30,7 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import Swal from "sweetalert2";
 import API_BASE_URL, { SERVER_BASE_URL } from "../config/api.config";
+import { getToken } from "../services/auth";
 
 const VALIDATION_DIALOG_MESSAGES = [
   "Uploading file...",
@@ -127,7 +128,10 @@ export default function UploadSheet() {
   const validationStepIntervalRef = useRef(null);
   const segmentationPollIntervalRef = useRef(null);
   const pipelinePollIntervalRef = useRef(null);
-  const accessToken = localStorage.getItem("access_token");
+  const getAuthHeaders = () => {
+    const token = getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
 
   const showAlert = (icon, title, text) =>
     Swal.fire({
@@ -589,7 +593,7 @@ useEffect(() => {
   const downloadFile = async (url, fileName) => {
     const response = await axios.get(url, {
       responseType: "blob",
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: getAuthHeaders(),
     });
 
     const link = document.createElement("a");
@@ -611,7 +615,7 @@ useEffect(() => {
 
       const taxTypeLower = String(taxType || "").toLowerCase();
       const primaryUrl = `${API_BASE_URL}/${taxTypeLower}/download/${encodeURIComponent(filename)}`;
-      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+      const headers = getAuthHeaders();
 
       const res = await axios.get(primaryUrl, { responseType: "blob", headers });
 
@@ -1346,7 +1350,7 @@ useEffect(() => {
                     <>
                       <Paper className="p-3 mb-3 upload-paper">
                         <div className="d-flex justify-content-between mb-2 flex-wrap">
-                          <div><strong>File:</strong> {file?.name || "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}</div>
+                          <div><strong>File:</strong> {file?.name || "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â"}</div>
                           <div>
                             <strong>Total:</strong> {uploadResponse.total_records ?? 0} |{" "}
                             <strong>Valid:</strong> {uploadResponse.valid_records ?? 0} |{" "}
@@ -1501,7 +1505,7 @@ useEffect(() => {
 
                             const res = await axios.get(downloadUrl, {
                               responseType: "blob",
-                              headers: { Authorization: `Bearer ${accessToken}` },
+                              headers: getAuthHeaders(),
                             });
 
                             const link = document.createElement("a");
@@ -1590,6 +1594,10 @@ useEffect(() => {
     </div>
   );
 }
+
+
+
+
 
 
 

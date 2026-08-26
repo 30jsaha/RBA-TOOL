@@ -1809,8 +1809,9 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if is_validated_file:
             swt_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'final_output'))
             logical_name = os.path.basename(str(saved_path or ''))
-            with materialize_output_to_tempfile(swt_output_dir, logical_name) as decrypted_input_path:
-                return _run_swt_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
+            if output_exists(swt_output_dir, logical_name):
+                with materialize_output_to_tempfile(swt_output_dir, logical_name) as decrypted_input_path:
+                    return _run_swt_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, is_validated_file=True)
 
         print("=" * 100)
         print("PIPELINE START")

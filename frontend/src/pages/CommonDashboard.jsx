@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import Header from "../components/layout/Header";
@@ -515,8 +515,6 @@ export default function CommonDashboard() {
   //   const access = params.get("access");
   //   const refresh = params.get("refresh");
 
-  //   if (access) localStorage.setItem("access", access);
-  //   if (refresh) localStorage.setItem("refresh", refresh);
 
   //   if (access || refresh) {
   //     window.history.replaceState({}, document.title, "/common-dashboard");
@@ -846,7 +844,7 @@ export default function CommonDashboard() {
                                 fullWidth: true,
                                 size: "small",
                                 inputProps: {
-                                  readOnly: true // 🔥 BLOCK KEYBOARD
+                                  readOnly: true // ðŸ”¥ BLOCK KEYBOARD
                                 }
                               }
                             }}

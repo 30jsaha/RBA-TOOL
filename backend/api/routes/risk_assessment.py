@@ -7,6 +7,11 @@ from functools import wraps
 import re
 import time
 from ..extensions import cache, db
+from utils.sql_security import (
+    validate_taxtype,
+    get_fraud_justification_table,
+    ALLOWED_TAX_TYPES
+)
 
 bp = Blueprint("risk_assessment", __name__, url_prefix="/api/risk-assessment")
 
@@ -69,8 +74,20 @@ def _risk_after_request(response):
 
 
 def get_requested_taxtype(default="gst"):
+    """Get and validate tax type from request arguments.
+    
+    Args:
+        default: Default tax type if not provided or invalid
+        
+    Returns:
+        Validated tax type ("gst", "swt", or "cit")
+    """
     value = request.args.get("taxtype", default)
-    return (value or "").lower()
+    try:
+        return validate_taxtype(value, default=default)
+    except ValueError:
+        # Invalid tax type provided - return default
+        return validate_taxtype(default, default=default)
 
 
 _DEFAULT_PERIOD_CACHE = {}
@@ -191,16 +208,17 @@ def _get_default_period_bounds(taxtype):
 
     now = datetime.now()
     if taxtype in {"gst", "swt"}:
-        table = "gst_fraud_justification" if taxtype == "gst" else "swt_fraud_justification"
+        # Use validated table name from security module
+        table = get_fraud_justification_table(taxtype)
         row = execute_fetchone(text(f"""
             SELECT tax_period_year, tax_period_month
-            FROM {table}
+            FROM `{table}`
             ORDER BY tax_period_year ASC, tax_period_month ASC
             LIMIT 1
         """))
         row_max = execute_fetchone(text(f"""
             SELECT tax_period_year, tax_period_month
-            FROM {table}
+            FROM `{table}`
             ORDER BY tax_period_year DESC, tax_period_month DESC
             LIMIT 1
         """))
@@ -209,15 +227,17 @@ def _get_default_period_bounds(taxtype):
         else:
             cached = (now.year, now.month, now.year, now.month)
     elif taxtype == "cit":
-        row = execute_fetchone(text("""
+        # For CIT, use the same function since it validates the tax type
+        table = get_fraud_justification_table(taxtype)
+        row = execute_fetchone(text(f"""
             SELECT tax_period_year
-            FROM cit_fraud_justification
+            FROM `{table}`
             ORDER BY tax_period_year ASC
             LIMIT 1
         """))
-        row_max = execute_fetchone(text("""
+        row_max = execute_fetchone(text(f"""
             SELECT tax_period_year
-            FROM cit_fraud_justification
+            FROM `{table}`
             ORDER BY tax_period_year DESC
             LIMIT 1
         """))
@@ -307,7 +327,11 @@ def get_tables():
 @bp.get("/filters")
 @jwt_required()
 def risk_assessment_filters():
-    taxtype = get_requested_taxtype("gst")
+    try:
+        taxtype = get_requested_taxtype("gst")
+    except ValueError:
+        return jsonify({"error": "Invalid taxtype"}), 400
+        
     start_year, start_month, end_year, end_month = get_date_range(taxtype)
     params = {
         "start_year": start_year,
@@ -317,11 +341,12 @@ def risk_assessment_filters():
     }
 
     if taxtype in {"gst", "swt"}:
-        table = "gst_fraud_justification" if taxtype == "gst" else "swt_fraud_justification"
+        # Use validated table name from security module
+        table = get_fraud_justification_table(taxtype)
         rows = execute_fetchall(
             text(f"""
                 SELECT pr.tax_period_year, pr.tax_period_month
-                FROM {table} pr
+                FROM `{table}` pr
                 WHERE {_period_filter_sql('pr')}
                 GROUP BY pr.tax_period_year, pr.tax_period_month
                 ORDER BY pr.tax_period_year, pr.tax_period_month
@@ -334,10 +359,12 @@ def risk_assessment_filters():
         return jsonify({"years": years, "tins": [], "months": months})
 
     if taxtype == "cit":
+        # Use validated table name from security module
+        table = get_fraud_justification_table(taxtype)
         year_rows = execute_fetchall(
             text(f"""
                 SELECT pr.tax_period_year
-                FROM cit_fraud_justification pr
+                FROM `{table}` pr
                 WHERE {_year_filter_sql('pr')}
                 GROUP BY pr.tax_period_year
                 ORDER BY pr.tax_period_year

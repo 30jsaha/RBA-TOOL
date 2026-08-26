@@ -1,20 +1,29 @@
-import axios from "axios";
+﻿import axios from "axios";
 import API_BASE_URL from "../config/api.config";
 
-const ACCESS_TOKEN_KEY = "access_token";
-const REFRESH_TOKEN_KEY = "refresh_token";
-const USER_KEY = "user";
-
+let accessToken = null;
 let currentUserRequest = null;
 let currentUserHydrated = false;
 let currentUserCache = null;
+let refreshRequest = null;
 
-const safeParseJson = (value) => {
-  try {
-    return value ? JSON.parse(value) : null;
-  } catch {
-    return null;
+const authClient = axios.create({
+  baseURL: API_BASE_URL,
+  withCredentials: true,
+});
+
+const readCookie = (name) => {
+  if (typeof document === "undefined") return null;
+
+  const prefix = `${name}=`;
+  const parts = document.cookie ? document.cookie.split(";") : [];
+  for (const rawPart of parts) {
+    const part = rawPart.trim();
+    if (part.startsWith(prefix)) {
+      return decodeURIComponent(part.slice(prefix.length));
+    }
   }
+  return null;
 };
 
 const normalizeRoles = (roles) => {
@@ -36,8 +45,8 @@ const normalizeSessionUser = (payload) => {
   const permissions = Array.isArray(payload.permissions)
     ? [...new Set(payload.permissions.filter(Boolean))]
     : Array.isArray(user.permissions)
-    ? [...new Set(user.permissions.filter(Boolean))]
-    : [];
+      ? [...new Set(user.permissions.filter(Boolean))]
+      : [];
 
   return {
     id: user.id ?? payload.id ?? null,
@@ -48,23 +57,22 @@ const normalizeSessionUser = (payload) => {
   };
 };
 
+export function setAccessToken(token) {
+  accessToken = typeof token === "string" && token.trim() ? token.trim() : null;
+  return accessToken;
+}
+
 const storeUser = (payload) => {
-  const normalizedUser = normalizeSessionUser(payload);
-  currentUserCache = normalizedUser;
-  if (normalizedUser) {
-    localStorage.setItem(USER_KEY, JSON.stringify(normalizedUser));
-  }
-  return normalizedUser;
+  currentUserCache = normalizeSessionUser(payload);
+  return currentUserCache;
 };
 
 export function getUser() {
-  if (currentUserCache) return currentUserCache;
-  currentUserCache = safeParseJson(localStorage.getItem(USER_KEY));
   return currentUserCache;
 }
 
 export function getToken() {
-  return localStorage.getItem(ACCESS_TOKEN_KEY);
+  return accessToken;
 }
 
 export function getPermissions() {
@@ -77,20 +85,45 @@ export function hasPermission(permission) {
   return getPermissions().includes(permission);
 }
 
-export function logout() {
+export function clearSession() {
+  accessToken = null;
   currentUserRequest = null;
   currentUserHydrated = false;
   currentUserCache = null;
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  refreshRequest = null;
 }
 
-export async function fetchCurrentUser() {
-  const token = getToken();
+const getRefreshCsrfHeader = () => {
+  const csrfToken = readCookie("rba_refresh_csrf");
+  return csrfToken ? { "X-CSRF-TOKEN": csrfToken } : {};
+};
+
+export async function refreshAccessToken() {
+  if (refreshRequest) return refreshRequest;
+
+  refreshRequest = authClient
+    .post("/auth/refresh", {}, { headers: getRefreshCsrfHeader() })
+    .then((res) => {
+      const nextAccessToken = res?.data?.access || null;
+      setAccessToken(nextAccessToken);
+      return nextAccessToken;
+    })
+    .catch((error) => {
+      clearSession();
+      throw error;
+    })
+    .finally(() => {
+      refreshRequest = null;
+    });
+
+  return refreshRequest;
+}
+
+export async function fetchCurrentUser(tokenOverride = null) {
+  const token = tokenOverride || getToken() || (await refreshAccessToken().catch(() => null));
   if (!token) return null;
 
-  const res = await axios.get(`${API_BASE_URL}/auth/me`, {
+  const res = await authClient.get("/auth/me", {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -99,36 +132,56 @@ export async function fetchCurrentUser() {
 }
 
 export async function ensureCurrentUser() {
-  const token = getToken();
-  if (!token) return null;
-
-  const existingUser = getUser();
-  if (currentUserHydrated && existingUser && Array.isArray(existingUser.permissions)) {
-    return existingUser;
+  if (currentUserHydrated && currentUserCache && Array.isArray(currentUserCache.permissions)) {
+    return currentUserCache;
   }
 
   if (!currentUserRequest) {
-    currentUserRequest = fetchCurrentUser().finally(() => {
+    currentUserRequest = (async () => {
+      const token = getToken() || (await refreshAccessToken().catch(() => null));
+      if (!token) {
+        clearSession();
+        return null;
+      }
+
+      try {
+        return await fetchCurrentUser(token);
+      } catch (error) {
+        clearSession();
+        throw error;
+      }
+    })().finally(() => {
       currentUserRequest = null;
     });
   }
 
-  return currentUserRequest;
+  try {
+    return await currentUserRequest;
+  } catch {
+    return null;
+  }
+}
+
+export async function restoreSession() {
+  try {
+    return await ensureCurrentUser();
+  } catch {
+    clearSession();
+    return null;
+  }
 }
 
 export async function login(email, password) {
   try {
-    const res = await axios.post(`${API_BASE_URL}/login`, { email, password });
+    const res = await authClient.post("/auth/login", { email, password });
 
-    const { access, refresh, user } = res.data || {};
-
-    if (access) localStorage.setItem(ACCESS_TOKEN_KEY, access);
-    if (refresh) localStorage.setItem(REFRESH_TOKEN_KEY, refresh);
+    const { access, user } = res.data || {};
+    setAccessToken(access);
     if (user) storeUser(user);
 
     if (access) {
       try {
-        const currentUser = await fetchCurrentUser();
+        const currentUser = await fetchCurrentUser(access);
         return { ...(res.data || {}), user: currentUser };
       } catch {
         // Keep login working even if /me temporarily fails.
@@ -141,5 +194,15 @@ export async function login(email, password) {
       throw err.response;
     }
     throw err;
+  }
+}
+
+export async function logout() {
+  try {
+    await authClient.post("/auth/logout", {}, { headers: getRefreshCsrfHeader() });
+  } catch {
+    // Clear client state even if the server-side cookie is already gone.
+  } finally {
+    clearSession();
   }
 }

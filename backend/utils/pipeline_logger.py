@@ -17,7 +17,7 @@ from utils.auth_helper import get_authenticated_user_id
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 PROJECT_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_FILE_PATH  = os.path.join(PROJECT_ROOT, 'pipeline_steps.log')
+LOG_FILE_PATH  = os.path.join(PROJECT_ROOT, 'logs', 'pipeline_steps.log')
 
 _UNICODE_REPLACEMENTS = {
     # Preferred (actual unicode symbols)

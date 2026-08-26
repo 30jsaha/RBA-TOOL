@@ -1,14 +1,12 @@
-# ══════════════════════════════════════════════════════════════
+﻿# =================================================================================
 #  api/app.py
 #  Flask API entrypoint
 #  Run: python api/app.py
 #  All endpoints available at http://localhost:5000
-# ══════════════════════════════════════════════════════════════
+# =================================================================================
 
 import os
 import sys
-
-from dotenv import load_dotenv
 
 # Prevent Windows console UnicodeEncodeError (cp1252/charmap) from crashing requests.
 if sys.platform.startswith("win"):
@@ -18,18 +16,12 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-# ── Allow imports from project root
+# â”€â”€ Allow imports from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(dotenv_path=os.path.join(BACKEND_ROOT, ".env"))
-
-from flask import Flask, jsonify
-from werkzeug.exceptions import RequestEntityTooLarge
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from utils.file_utils import get_backend_storage_dir, get_backend_upload_dir
-from utils.file_security import validate_final_output_encryption_config
-from utils.upload_security import get_max_upload_size_bytes
 from utils.rbac import role_required
 
 def _env_flag(name: str) -> bool:
@@ -37,7 +29,6 @@ def _env_flag(name: str) -> bool:
 
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = get_max_upload_size_bytes()
 # CORS (scoped to local React dev server).
 # NOTE: Preflight (OPTIONS) is already allowlisted in auth middleware.
 # CORS(
@@ -62,22 +53,34 @@ CORS(
                 "origins": [
                     "http://13.55.253.247",
                     "http://13.55.253.247:80",
+                    "http://localhost:4173",
+                    "http://127.0.0.1:4173",
                     "http://localhost:5173",
-                    "http://127.0.0.1:5173"
+                    "http://127.0.0.1:5173",
+                    "http://localhost:5174",
+                    "http://127.0.0.1:5174",
+                    "http://localhost:5175",
+                    "http://127.0.0.1:5175"
                 ],
                 "supports_credentials": True,
-                "allow_headers": ["Content-Type", "Authorization"],
+                "allow_headers": ["Content-Type", "Authorization", "X-CSRF-TOKEN"],
                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
             },
-            r"/outputs/*": {  # ← ADD THIS for file downloads
+            r"/outputs/*": {  # â† ADD THIS for file downloads
                 "origins": [
                     "http://13.55.253.247",
                     "http://13.55.253.247:80",
+                    "http://localhost:4173",
+                    "http://127.0.0.1:4173",
                     "http://localhost:5173",
-                    "http://127.0.0.1:5173"
+                    "http://127.0.0.1:5173",
+                    "http://localhost:5174",
+                    "http://127.0.0.1:5174",
+                    "http://localhost:5175",
+                    "http://127.0.0.1:5175"
                 ],
                 "supports_credentials": True,
-                "allow_headers": ["Content-Type", "Authorization"],
+                "allow_headers": ["Content-Type", "Authorization", "X-CSRF-TOKEN"],
                 "methods": ["GET", "OPTIONS"]  # Only GET and OPTIONS needed for downloads
             }
         }
@@ -90,18 +93,12 @@ app.config.setdefault("CACHE_DEFAULT_TIMEOUT", 300)
 app.config.setdefault("CACHE_THRESHOLD", 512)
 cache.init_app(app)
 
-# ── Auth (ported from old-backend) ──────────────────────────────
+# â”€â”€ Auth (ported from old-backend) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Centralized middleware protects all `/api/*` routes except allowlisted.
 from auth import init_auth
 init_auth(app)
-validate_final_output_encryption_config()
 
-
-@app.errorhandler(RequestEntityTooLarge)
-def handle_request_entity_too_large(_exc):
-    return jsonify({'error': 'Uploaded file exceeds the configured size limit'}), 413
-
-# ── Register route blueprints
+# â”€â”€ Register route blueprints
 from api.routes import gst_routes, cit_routes, swt_routes, segmentation as segmentation_routes
 from api.routes.logs_routes        import logs_bp
 from api.routes.multi_tax_routes   import multi_tax_bp
@@ -140,7 +137,7 @@ app.register_blueprint(logs_bp)
 app.register_blueprint(multi_tax_bp)
 app.register_blueprint(integration_bp)
 app.register_blueprint(validate_bp)         
-# ── Auto-create all DB tables on startup
+# â”€â”€ Auto-create all DB tables on startup
 from config.db_init import init_db
 init_db()
 
@@ -166,13 +163,36 @@ app.register_blueprint(role_management_bp)
 app.register_blueprint(conflicts_admin_bp)
 app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
-# ── Health check
+# â”€â”€ Serve static outputs (CORS Preflight target)
+@app.route('/outputs/<path:filename>', methods=['GET'])
+def download_output_file(filename):
+    return send_from_directory(get_backend_storage_dir("outputs"), filename, as_attachment=True)
+
+# â”€â”€ Health check
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'message': 'Tax Fraud Detection API is running'}), 200
 
 
-# ── List all routes (useful during dev)
+# â”€â”€ List all routes (useful during dev)
+@app.after_request
+def apply_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+    if (request.path or "").startswith("/api"):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
+
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    return response
+
 @app.route('/api/routes', methods=['GET'])
 @role_required(["ADMIN"])
 def list_routes():
@@ -208,10 +228,19 @@ if __name__ == '__main__':
     print("          GET  /api/integration/logs?tax_type=GST")
     print("="*60 + "\n")
 
-    app.run(debug=_env_flag("FLASK_DEBUG") or _env_flag("DEBUG"), port=5000, threaded=True)
+    app.run(
+        # Windows does not reliably dual-stack an IPv6 wildcard listener.  Vite's
+        # `localhost` proxy commonly resolves to 127.0.0.1, so use IPv4 loopback
+        # by default for local development. Deployments can set FLASK_HOST as
+        # needed (for example, 0.0.0.0 or ::).
+        host=os.getenv("FLASK_HOST", "127.0.0.1"),
+        debug=_env_flag("FLASK_DEBUG") or _env_flag("DEBUG"),
+        port=int(os.getenv("FLASK_PORT", "5000")),
+        threaded=True,
+    )
 
 
-# ──────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #  That's it. All 8 new endpoints are now live:
 #
 #  Static step definitions (no auth, no DB):
@@ -228,7 +257,4 @@ if __name__ == '__main__':
 #    POST /api/gst/validate   (multipart/form-data, field: file)
 #    POST /api/cit/validate   (multipart/form-data, field: file)
 #    POST /api/swt/validate   (multipart/form-data, field: file)
-# ──────────────────────────────────────────────────────────────
-
-
-
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

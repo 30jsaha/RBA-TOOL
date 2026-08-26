@@ -1323,6 +1323,19 @@ def _execute_segmentation_updates(
 
 def _run_overall_segmentation_internal(user_id: int, data: Dict[str, object], job_id: str = None) -> Dict[str, object]:
     merged_file = data.get("merged_file")
+
+    # Path traversal validation (SEC-007)
+    if merged_file:
+        resolved = os.path.abspath(merged_file)
+        allowed = False
+        for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, SEGMENTED_FOLDER]:
+            abs_folder = os.path.abspath(folder)
+            if resolved.startswith(abs_folder + os.sep) or resolved == abs_folder:
+                allowed = True
+                break
+        if not allowed:
+            raise ValueError("Path traversal or unauthorized file path detected")
+
     gst_history_id = data.get("gst_history_id")
     swt_history_id = data.get("swt_history_id")
     cit_history_id = data.get("cit_history_id")
@@ -1631,6 +1644,18 @@ def overall_segmentation():
     end_date = data.get("end_date")
     gst_history_id = data.get("gst_history_id")
     cit_history_id = data.get("cit_history_id")
+
+    # Path traversal validation (SEC-007)
+    if merged_file:
+        resolved = os.path.abspath(merged_file)
+        allowed = False
+        for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, SEGMENTED_FOLDER]:
+            abs_folder = os.path.abspath(folder)
+            if resolved.startswith(abs_folder + os.sep) or resolved == abs_folder:
+                allowed = True
+                break
+        if not allowed:
+            return jsonify({"error": "Path traversal or unauthorized file path detected"}), 400
 
     if not merged_file or not os.path.exists(merged_file):
         return jsonify({"error": "Merged file not found"}), 400
