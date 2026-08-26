@@ -1,4 +1,4 @@
-﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 #  utils/pipeline_logger.py
 #  Step-by-step logger for GST, SWT, CIT pipelines
 #  Writes to MySQL table: pipeline_logs
@@ -66,13 +66,17 @@ def _get_file_logger():
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
-    formatter = logging.Formatter(
-        fmt='%(asctime)s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
+        handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
+        formatter = logging.Formatter(
+            fmt='%(asctime)s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    except Exception as exc:
+        safe_console_print(f"[PIPELINE_LOGGER] Warning: FileHandler creation failed: {exc}")
     return logger
 
 
