@@ -29,6 +29,9 @@ def reset_db():
         "upload_log",
         "upload_history",
         "pipeline_log",
+        "multitax_dashboard_summary",
+        "multitax_dashboard_summary_status",
+        "segmentation_tbl",
     ]
 
     reset_engine = None
@@ -65,15 +68,16 @@ def reset_db():
                     if table not in existing_tables:
                         continue
 
+                    # TRUNCATE is an instant DDL operation (< 0.1s even for 2.7M+ rows)
                     try:
-                        conn.execute(text(f"DELETE FROM `{table}`"))
+                        conn.execute(text(f"TRUNCATE TABLE `{table}`"))
                     except Exception as err:
-                        print(f"[RESET_DB] Failed DELETE on `{table}`: {err}")
-
-                    try:
-                        conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
-                    except Exception:
-                        pass
+                        print(f"[RESET_DB] TRUNCATE on `{table}` failed ({err}), falling back to DELETE...")
+                        try:
+                            conn.execute(text(f"DELETE FROM `{table}`"))
+                            conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
+                        except Exception as del_err:
+                            print(f"[RESET_DB] DELETE fallback on `{table}` failed: {del_err}")
             finally:
                 try:
                     conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
