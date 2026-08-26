@@ -50,8 +50,7 @@ class _DB:
         def _ensure_clean_session():
             try:
                 if self._Session is not None:
-                    # If transaction is in failed / inactive state, rollback cleanly
-                    self._Session.rollback()
+                    self._Session.remove()
             except Exception:
                 pass
 
@@ -59,7 +58,6 @@ class _DB:
         def _shutdown_session(exception=None):
             try:
                 if self._Session is not None:
-                    self._Session.rollback()
                     self._Session.remove()
             except Exception:
                 pass

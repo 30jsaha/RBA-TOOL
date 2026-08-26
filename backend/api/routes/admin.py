@@ -1,4 +1,4 @@
-from flask import Blueprint, request
+from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
 from sqlalchemy import inspect, text
 
@@ -29,14 +29,21 @@ def reset_db():
         "upload_log",
         "upload_history",
         "pipeline_log",
+        "multitax_dashboard_summary",
+        "multitax_dashboard_summary_status",
+        "segmentation_tbl",
     ]
 
     reset_engine = None
 
     try:
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
+            if hasattr(db, "_Session") and db._Session is not None:
+                db._Session.remove()
+            if hasattr(db, "engine") and db.engine is not None:
+                db.engine.dispose()
         except Exception:
             pass
 
@@ -61,34 +68,42 @@ def reset_db():
                     if table not in existing_tables:
                         continue
 
-                    conn.execute(text(f"DELETE FROM `{table}`"))
-
+                    # TRUNCATE is an instant DDL operation (< 0.1s even for 2.7M+ rows)
                     try:
-                        conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
-                    except Exception:
-                        # Tables without AUTO_INCREMENT do not need a reset.
-                        pass
+                        conn.execute(text(f"TRUNCATE TABLE `{table}`"))
+                    except Exception as err:
+                        print(f"[RESET_DB] TRUNCATE on `{table}` failed ({err}), falling back to DELETE...")
+                        try:
+                            conn.execute(text(f"DELETE FROM `{table}`"))
+                            conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
+                        except Exception as del_err:
+                            print(f"[RESET_DB] DELETE fallback on `{table}` failed: {del_err}")
             finally:
-                conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+                try:
+                    conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+                except Exception:
+                    pass
 
-        return {
+        return jsonify({
             "status": "success",
             "message": "Database reset completed successfully",
-        }, 200
+        }), 200
     except Exception as e:
+        import traceback
+        print(f"[RESET_DB ERROR]\n{traceback.format_exc()}")
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
         except Exception:
             pass
-        return {
+        return jsonify({
             "status": "error",
             "message": str(e),
-        }, 500
+        }), 500
     finally:
         try:
-            db.session.rollback()
-            db.session.remove()
+            if hasattr(db, "session") and db.session is not None:
+                db.session.remove()
         except Exception:
             pass
 
@@ -105,10 +120,10 @@ def reset_db():
 def cleanup_temp_files():
     data = request.get_json(silent=True) or {}
     if data.get("confirm") is not True:
-        return {
+        return jsonify({
             "success": False,
             "message": "Confirmation is required to clean temporary files",
-        }, 400
+        }), 400
 
     try:
         report = cleanup_all_final_output_directories()
@@ -127,9 +142,9 @@ def cleanup_temp_files():
         if failed:
             response["failed"] = failed
 
-        return response, 200
+        return jsonify(response), 200
     except Exception as exc:
-        return {
+        return jsonify({
             "success": False,
             "message": str(exc),
-        }, 500
+        }), 500

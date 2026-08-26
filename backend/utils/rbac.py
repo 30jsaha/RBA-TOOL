@@ -146,7 +146,11 @@ def get_current_security_context():
             ),
             {"user_id": user_id},
         ).fetchall()
-    except SQLAlchemyError:
+    except Exception:
+        try:
+            db.session.remove()
+        except Exception:
+            pass
         context = {
             "user": None,
             "roles": [],
