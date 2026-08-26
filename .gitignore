@@ -76,6 +76,7 @@ backend/reports/*
 backend/swt/logs/*
 backend/gst/logs/*
 backend/cit/logs/*
+backend/tests/*
 
 !backend/final_output/.gitkeep
 

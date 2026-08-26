@@ -1,33 +1,7 @@
-import ExcelJS from "exceljs";
-import { saveAs } from "file-saver";
+﻿import { saveAs } from "file-saver";
 
 export const exportToExcel = async (data, filename = "export") => {
-  const rows = Array.isArray(data) ? data : [];
-  const headerKeys = rows.length > 0 ? Object.keys(rows[0] ?? {}) : [];
-
-  const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Data");
-
-  if (headerKeys.length > 0) {
-    worksheet.columns = headerKeys.map((key) => ({
-      header: key,
-      key,
-    }));
-
-    rows.forEach((row) => {
-      const normalizedRow = Object.fromEntries(
-        headerKeys.map((key) => [key, row?.[key] ?? null])
-      );
-      worksheet.addRow(normalizedRow);
-    });
-  }
-
-  const excelBuffer = await workbook.xlsx.writeBuffer();
-  const blob = new Blob([excelBuffer], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
-
-  saveAs(blob, `${filename}.xlsx`);
+  exportToCSV(data, filename);
 };
 
 export const exportToCSVOld = (data, filename = "export") => {

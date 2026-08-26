@@ -17,7 +17,7 @@ from utils.auth_helper import get_authenticated_user_id
 # ── Point log file to project root regardless of which
 #    subfolder the script is called from
 PROJECT_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_FILE_PATH = os.path.join(PROJECT_ROOT, 'upload_history.log')
+LOG_FILE_PATH = os.path.join(PROJECT_ROOT, 'logs', 'upload_history.log')
 
 
 # ─────────────────────────────────────────────

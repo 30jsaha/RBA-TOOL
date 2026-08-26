@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+ï»¿import { useEffect, useMemo, useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -31,6 +31,7 @@ import tableCustomStyles from "../components/common/tableStyles";
 
 import useTenure from "../hooks/useTenure";
 import DataTableExport from "../components/common/DataTableExport";
+import FraudReasonContent from "../components/common/FraudReasonContent";
 import API from "../api/api";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -44,68 +45,6 @@ const monthLabel = (year, month) => {
   return dayjs(`${year}-${String(month).padStart(2, "0")}-01`).format("YYYY MMMM");
 };
 
-const formatFraudReason = (text) => {
-  if (!text) return "<div>No details available.</div>";
-
-  let normalized = text.replace(/\\n/g, "\n").replace(/\\u2022/g, "•").replace(/â€¢/g, "•");
-
-  if (normalized.includes("•")) {
-    const parts = normalized
-      .split("•")
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    return `
-      <ul style="padding-left:18px; color:#333; margin-bottom:0;">
-        ${parts.map((item) => `<li style="margin:6px 0;">${item}</li>`).join("")}
-      </ul>
-    `;
-  }
-
-  if (!/\d+\.\s*/.test(normalized)) {
-    const parts = normalized
-      .split(";")
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    return `
-      <ul style="padding-left:18px; color:#333; margin-bottom:0;">
-        ${parts.map((item) => `<li style="margin:6px 0;">${item}</li>`).join("")}
-      </ul>
-    `;
-  }
-
-  const blocks = normalized.split(/(?=\n?\d+\.\s*)/g);
-  const html = blocks
-    .map((block) => {
-      const titleMatch = block.match(/\d+\.\s*(?:Flag\s*-\s*)?([^:]+):/i);
-      if (!titleMatch) return "";
-
-      const title = titleMatch[1].trim();
-      const details = block.slice(titleMatch[0].length).trim();
-      const parts = details
-        .split(/\(\s*(?:i|ii|iii|iv|v|vi|vii|viii|ix|x)\s*\)/gi)
-        .map((item) => item.trim())
-        .filter(Boolean);
-
-      return `
-        <div style="margin: 14px 0;">
-          <div style="font-size:16px; font-weight:700; color:#D2122E;">• ${title}</div>
-          ${
-            parts.length
-              ? `<ul style="margin-top:6px; padding-left:18px; color:#333; margin-bottom:0;">${parts
-                  .map((item) => `<li style="margin:4px 0;">${item}</li>`)
-                  .join("")}</ul>`
-              : ""
-          }
-        </div>
-      `;
-    })
-    .filter(Boolean)
-    .join("");
-
-  return html || "<div>No details available.</div>";
-};
 
 export default function TaxpayerProfile() {
   const [collapsed, setCollapsed] = useState(false);
@@ -650,12 +589,7 @@ export default function TaxpayerProfile() {
                     <Typography fontWeight={600}>{monthLabel(item.year, item.month)}</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <Typography
-                      variant="body2"
-                      component="div"
-                      dangerouslySetInnerHTML={{ __html: formatFraudReason(item.fraud_reason) }}
-                      style={{ lineHeight: 1.6 }}
-                    />
+                    <FraudReasonContent message={item.fraud_reason} typographyVariant="body2" />
                   </AccordionDetails>
                 </Accordion>
               );
@@ -768,6 +702,8 @@ export default function TaxpayerProfile() {
     </div>
   );
 }
+
+
 
 
 

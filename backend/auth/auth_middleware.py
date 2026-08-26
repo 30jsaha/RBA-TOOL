@@ -1,4 +1,4 @@
-import os
+﻿import os
 import traceback
 
 from flask import jsonify, request
@@ -20,6 +20,7 @@ def install_auth_middleware(app):
         "/api/login",
         "/api/auth/login",
         "/api/auth/refresh",
+        "/api/auth/logout",
         "/api/auth/me",
     }
 
@@ -73,3 +74,5 @@ def install_auth_middleware(app):
                 print(f"[AUTH_DEBUG] allowed path={path} (claims unavailable)")
 
         return None
+
+

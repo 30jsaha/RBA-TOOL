@@ -1,7 +1,18 @@
-# gst_fraud_predictor.py
-import pandas as pd
-import numpy as np
-import joblib
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import joblib
+except ImportError:
+    joblib = None
+import pickle
 
 def load_model_and_features(model_path='xgboost_selected_model.pkl', 
                            features_path='feature_info_selected.pkl'):
@@ -15,8 +26,14 @@ def load_model_and_features(model_path='xgboost_selected_model.pkl',
     Returns:
         tuple: (model, feature_info)
     """
-    xgb_model = joblib.load(model_path)
-    feature_info = joblib.load(features_path)
+    if joblib is not None:
+        xgb_model = joblib.load(model_path)
+        feature_info = joblib.load(features_path)
+    else:
+        with open(model_path, 'rb') as f:
+            xgb_model = pickle.load(f)
+        with open(features_path, 'rb') as f:
+            feature_info = pickle.load(f)
     
     return xgb_model, feature_info
 
@@ -43,8 +60,15 @@ def prepare_features_for_prediction(new_data, feature_columns=None):
             "gst_sec65a_credit_allowable"
         ]
     
-    # Select and prepare features
-    new_df = new_data[feature_columns].copy()
+    # Extract available columns and add any missing columns with 0
+    new_df = pd.DataFrame(index=new_data.index)
+    for col in feature_columns:
+        if col in new_data.columns:
+            new_df[col] = new_data[col]
+        else:
+            new_df[col] = 0
+            
+    new_df = new_df[feature_columns].copy()
     new_df = new_df.fillna(0)
     
     # Convert taxpayer_type to categorical
@@ -64,23 +88,33 @@ def encode_features(new_df, feature_info):
     Returns:
         np.ndarray: Encoded features for prediction
     """
+    expected_features = feature_info['feature_names']
+
     # One-hot encode categorical variables
     X_new_encoded = pd.get_dummies(new_df, drop_first=True)
-    
-    # Select features based on training feature names
-    X_new_selected = X_new_encoded[feature_info['feature_names']].copy()
-    
-    # Add missing columns with zeros
-    missing_cols = set(feature_info['feature_names']) - set(X_new_selected.columns)
-    for col in missing_cols:
-        X_new_selected[col] = 0
-    
-    # Ensure column order matches training
-    X_new_selected = X_new_selected[feature_info['feature_names']]
-    
+
+    # Ensure taxpayer_type_INDIVIDUAL is accurately computed if taxpayer_type column is present
+    if 'taxpayer_type' in new_df.columns and 'taxpayer_type_INDIVIDUAL' not in X_new_encoded.columns:
+        if 'taxpayer_type_INDIVIDUAL' in expected_features:
+            X_new_encoded['taxpayer_type_INDIVIDUAL'] = (
+                new_df['taxpayer_type'].astype(str).str.strip().str.upper() == 'INDIVIDUAL'
+            ).astype(int)
+
+    # Add any missing expected columns with zeros
+    for col in expected_features:
+        if col not in X_new_encoded.columns:
+            X_new_encoded[col] = 0
+
+    # Ensure exact column selection and deterministic ordering matching the training contract
+    X_new_selected = X_new_encoded[expected_features].copy()
+
+    # Ensure all columns are numeric float to prevent data type mismatch during XGBoost inference
+    for col in expected_features:
+        X_new_selected[col] = pd.to_numeric(X_new_selected[col], errors='coerce').fillna(0).astype(float)
+
     # Convert to numpy array
     X_new_final = X_new_selected.values
-    
+
     return X_new_final
 
 def predict_fraud(model, X_features, threshold=0.4):
@@ -96,7 +130,11 @@ def predict_fraud(model, X_features, threshold=0.4):
         tuple: (predictions, probabilities)
     """
     # Get prediction probabilities
-    fraud_probabilities = model.predict_proba(X_features)[:, 1]
+    proba_matrix = model.predict_proba(X_features)
+    if hasattr(proba_matrix, 'shape') and len(proba_matrix.shape) == 2:
+        fraud_probabilities = proba_matrix[:, 1]
+    else:
+        fraud_probabilities = [row[1] for row in proba_matrix]
     
     # Convert to labels based on threshold
     predictions = ['Fraud' if prob > threshold else 'Non-Fraud' 

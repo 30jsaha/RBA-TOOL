@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 
-import { ensureCurrentUser, getToken, getUser } from "../../services/auth";
+import { ensureCurrentUser, getUser } from "../../services/auth";
 
 const hasRoleAccess = (user, requiredRoles) => {
   if (!Array.isArray(requiredRoles) || requiredRoles.length === 0) return true;
@@ -21,17 +21,11 @@ const hasPermissionAccess = (user, permission) => {
 };
 
 export default function ProtectedRoute({ children, requiredRoles, permission, redirectTo = "/common-dashboard" }) {
-  const token = getToken();
   const [user, setUser] = useState(() => getUser());
-  const [loading, setLoading] = useState(Boolean(token));
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
-
-    if (!token) {
-      setLoading(false);
-      return undefined;
-    }
 
     ensureCurrentUser()
       .then((resolvedUser) => {
@@ -45,14 +39,14 @@ export default function ProtectedRoute({ children, requiredRoles, permission, re
     return () => {
       active = false;
     };
-  }, [token, user]);
-
-  if (!token) {
-    return <Navigate to="/" replace />;
-  }
+  }, []);
 
   if (loading) {
     return null;
+  }
+
+  if (!user) {
+    return <Navigate to="/" replace />;
   }
 
   if (!hasRoleAccess(user, requiredRoles) || !hasPermissionAccess(user, permission)) {

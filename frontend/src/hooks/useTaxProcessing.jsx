@@ -1,4 +1,5 @@
-import { useState } from "react";
+﻿import { useState } from "react";
+import { getToken } from "../services/auth";
 import { getAxiosInstance, uploadTaxFile, processTaxSteps, fetchMergedDetails } from "../services/taxProcessingService";
 
 export default function useTaxProcessing() {
@@ -7,10 +8,8 @@ export default function useTaxProcessing() {
   const [processing, setProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
 
-  const accessToken = localStorage.getItem("access");
-
   const startUpload = async (taxType, file) => {
-    const axiosInstance = getAxiosInstance(taxType, accessToken);
+    const axiosInstance = getAxiosInstance(taxType, getToken());
     const res = await uploadTaxFile(axiosInstance, taxType, file);
     setUploadResponse(res.data);
     return res.data;
@@ -23,7 +22,7 @@ export default function useTaxProcessing() {
     setProgress(10);
     setStatusMsg(`Validating ${taxType.toUpperCase()} data...`);
 
-    const axiosInstance = getAxiosInstance(taxType, accessToken);
+    const axiosInstance = getAxiosInstance(taxType, getToken());
     await processTaxSteps(axiosInstance, taxType, uploadResponse);
 
     setProgress(100);
@@ -32,7 +31,7 @@ export default function useTaxProcessing() {
   };
 
   const loadMerged = async (taxType) => {
-    const axiosInstance = getAxiosInstance(taxType, accessToken);
+    const axiosInstance = getAxiosInstance(taxType, getToken());
     const response = await fetchMergedDetails(axiosInstance);
     return response.data;
   };

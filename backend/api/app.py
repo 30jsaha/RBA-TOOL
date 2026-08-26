@@ -8,8 +8,6 @@
 import os
 import sys
 
-from dotenv import load_dotenv
-
 # Prevent Windows console UnicodeEncodeError (cp1252/charmap) from crashing requests.
 if sys.platform.startswith("win"):
     try:
@@ -21,15 +19,9 @@ if sys.platform.startswith("win"):
 # ── Allow imports from project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(dotenv_path=os.path.join(BACKEND_ROOT, ".env"))
-
-from flask import Flask, jsonify
-from werkzeug.exceptions import RequestEntityTooLarge
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from utils.file_utils import get_backend_storage_dir, get_backend_upload_dir
-from utils.file_security import validate_final_output_encryption_config
-from utils.upload_security import get_max_upload_size_bytes
 from utils.rbac import role_required
 
 def _env_flag(name: str) -> bool:
@@ -37,7 +29,6 @@ def _env_flag(name: str) -> bool:
 
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = get_max_upload_size_bytes()
 # CORS (scoped to local React dev server).
 # NOTE: Preflight (OPTIONS) is already allowlisted in auth middleware.
 # CORS(
@@ -94,12 +85,6 @@ cache.init_app(app)
 # Centralized middleware protects all `/api/*` routes except allowlisted.
 from auth import init_auth
 init_auth(app)
-validate_final_output_encryption_config()
-
-
-@app.errorhandler(RequestEntityTooLarge)
-def handle_request_entity_too_large(_exc):
-    return jsonify({'error': 'Uploaded file exceeds the configured size limit'}), 413
 
 # ── Register route blueprints
 from api.routes import gst_routes, cit_routes, swt_routes, segmentation as segmentation_routes
@@ -166,6 +151,11 @@ app.register_blueprint(role_management_bp)
 app.register_blueprint(conflicts_admin_bp)
 app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
+# ── Serve static outputs (CORS Preflight target)
+@app.route('/outputs/<path:filename>', methods=['GET'])
+def download_output_file(filename):
+    return send_from_directory(get_backend_storage_dir("outputs"), filename, as_attachment=True)
+
 # ── Health check
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -173,6 +163,24 @@ def health():
 
 
 # ── List all routes (useful during dev)
+@app.after_request
+def apply_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+    if (request.path or "").startswith("/api"):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
+
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    return response
+
 @app.route('/api/routes', methods=['GET'])
 @role_required(["ADMIN"])
 def list_routes():
@@ -229,6 +237,3 @@ if __name__ == '__main__':
 #    POST /api/cit/validate   (multipart/form-data, field: file)
 #    POST /api/swt/validate   (multipart/form-data, field: file)
 # ──────────────────────────────────────────────────────────────
-
-
-

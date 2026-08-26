@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -147,7 +147,6 @@ const getParams = () => {
     };
 
   // const BASE = "http://127.0.0.1:5000/api";
-  // const accessToken = localStorage.getItem("access");
 
   // const axiosInstance = axios.create({
   //   baseURL: BASE,
@@ -217,7 +216,7 @@ const getParams = () => {
       setLoading(false);
       fetchSecondaryData(); // Fetch tables async
     } catch (err) {
-      setErrorMsg("❌ Failed to load core data.");
+      setErrorMsg("âŒ Failed to load core data.");
       setLoading(false);
     }
   };

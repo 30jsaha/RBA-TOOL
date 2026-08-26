@@ -1,12 +1,17 @@
-import os
+﻿import os
+import time
+import threading
+from collections import defaultdict
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, make_response
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
     get_jwt,
     get_jwt_identity,
     jwt_required,
+    set_refresh_cookies,
+    unset_jwt_cookies,
 )
 from passlib.hash import bcrypt
 
@@ -17,21 +22,86 @@ auth_bp = Blueprint("auth", __name__)
 public_auth_bp = Blueprint("public_auth", __name__)
 
 
+class LoginRateLimiter:
+    def __init__(self, max_attempts=5, window_seconds=60, lockout_seconds=300):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.lockout_seconds = lockout_seconds
+        self.attempts = defaultdict(list)
+        self.lockouts = {}
+        self.lock = threading.Lock()
+
+    def is_locked_out(self, ip):
+        with self.lock:
+            now = time.time()
+            if ip in self.lockouts:
+                if now > self.lockouts[ip]:
+                    del self.lockouts[ip]
+                else:
+                    return int(self.lockouts[ip] - now)
+            return 0
+
+    def record_attempt(self, ip, success):
+        with self.lock:
+            now = time.time()
+            if success:
+                self.attempts[ip] = []
+                if ip in self.lockouts:
+                    del self.lockouts[ip]
+                return True
+            self.attempts[ip].append(now)
+            self.attempts[ip] = [t for t in self.attempts[ip] if now - t < self.window_seconds]
+            if len(self.attempts[ip]) >= self.max_attempts:
+                self.lockouts[ip] = now + self.lockout_seconds
+                return False
+            return True
+
+
+limiter = LoginRateLimiter()
+
+
 def _auth_debug_enabled() -> bool:
     return os.getenv("AUTH_DEBUG", "").strip() == "1"
 
 
+def _build_user_payload(user):
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "full_name": user.get("full_name"),
+        "roles": user.get("roles", []),
+    }
+
+
+def _issue_auth_response(user):
+    access_token = create_access_token(
+        identity=str(user["id"]),
+        additional_claims={"email": user["email"], "roles": user.get("roles", [])},
+    )
+    refresh_token = create_refresh_token(identity=str(user["id"]))
+
+    response = jsonify(
+        {
+            "access": access_token,
+            "user": _build_user_payload(user),
+        }
+    )
+    set_refresh_cookies(response, refresh_token)
+    return response, access_token
+
+
 def _login_impl():
-    """
-    Ported from old-backend `app/blueprints/auth.py` with DB access adapted
-    to this backend's SQLAlchemy engine.
-    """
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr) or "unknown"
+    lockout_remaining = limiter.is_locked_out(ip)
+    if lockout_remaining > 0:
+        return jsonify({
+            "message": f"Too many failed login attempts. Please try again in {lockout_remaining} seconds."
+        }), 429
+
     data = request.get_json(silent=True) or {}
     email = (data.get("email", "") or "").lower().strip()
     password_raw = data.get("password", "")
 
-    # Ensure we only ever verify the *raw* password, not pre-hashed/encoded data.
-    # Never print the password value; only type/length when AUTH_DEBUG=1.
     if isinstance(password_raw, bytes):
         password = password_raw.decode("utf-8", errors="ignore")
     elif password_raw is None:
@@ -64,7 +134,6 @@ def _login_impl():
         print(f"[AUTH_DEBUG] stored_hash type={type(stored_hash)}")
         print(f"[AUTH_DEBUG] user_found={bool(user)} is_active={bool(user.get('is_active')) if user else None}")
         if isinstance(stored_hash, str):
-            # Never print full hash; prefix is enough to detect scheme.
             print(f"[AUTH_DEBUG] stored_hash_prefix={stored_hash[:4]}")
 
     password_ok = False
@@ -72,36 +141,21 @@ def _login_impl():
         try:
             password_ok = bcrypt.verify(password, stored_hash)
         except ValueError as e:
-            # passlib's bcrypt may raise on invalid/oversized secret inputs;
-            # treat as invalid credentials (do not leak details).
             if _auth_debug_enabled():
                 print(f"[AUTH_DEBUG] password verify error: {e}")
             password_ok = False
 
     if not password_ok:
+        limiter.record_attempt(ip, success=False)
         return jsonify({"message": "Invalid credentials"}), 401
 
-    access_token = create_access_token(
-        identity=str(user["id"]),
-        additional_claims={"email": user["email"], "roles": user.get("roles", [])},
-    )
-    refresh_token = create_refresh_token(identity=str(user["id"]))
+    limiter.record_attempt(ip, success=True)
+    response, _ = _issue_auth_response(user)
 
     if _auth_debug_enabled():
         print(f"[AUTH_DEBUG] authenticated user_id={user['id']} email={user['email']}")
 
-    return jsonify(
-        {
-            "access": access_token,
-            "refresh": refresh_token,
-            "user": {
-                "id": user["id"],
-                "email": user["email"],
-                "full_name": user.get("full_name"),
-                "roles": user.get("roles", []),
-            },
-        }
-    ), 200
+    return response, 200
 
 
 @auth_bp.post("/login")
@@ -111,21 +165,31 @@ def login():
 
 @public_auth_bp.post("/login")
 def login_alias():
-    # Alias for compatibility with clients expecting POST /api/login
     return _login_impl()
 
 
 @auth_bp.post("/refresh")
-@jwt_required(refresh=True)
+@jwt_required(refresh=True, locations=["cookies"])
 def refresh():
     current_user_id = get_jwt_identity()
     claims = get_jwt()
 
-    new_access_token = create_access_token(
+    access_token = create_access_token(
         identity=str(current_user_id),
         additional_claims={"email": claims.get("email"), "roles": claims.get("roles", [])},
     )
-    return jsonify({"access": new_access_token}), 200
+    refresh_token = create_refresh_token(identity=str(current_user_id))
+
+    response = jsonify({"access": access_token})
+    set_refresh_cookies(response, refresh_token)
+    return response, 200
+
+
+@auth_bp.post("/logout")
+def logout_route():
+    response = make_response(jsonify({"message": "Logged out"}), 200)
+    unset_jwt_cookies(response)
+    return response
 
 
 @auth_bp.get("/me")

@@ -1,11 +1,11 @@
-import AvtarImage from "../../assets/user/avatar-8.jpg";
+﻿import AvtarImage from "../../assets/user/avatar-8.jpg";
 import { IoMdLogOut } from "react-icons/io";
 
 import { logout } from "../../services/auth";
 
 export default function Header() {
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     window.location.href = "/";
   };
 
