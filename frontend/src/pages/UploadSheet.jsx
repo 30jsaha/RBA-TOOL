@@ -90,7 +90,6 @@ export default function UploadSheet() {
   const [pipelineState, setPipelineState] = useState(createInitialPipelineState);
   const [runId, setRunId] = useState(null);
   const terminalRunIdRef = useRef(null);
-  const multitaxRefreshStartedRef = useRef(false);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [mergedData, setMergedData] = useState([]);
   const [excelUrl, setExcelUrl] = useState("");
@@ -159,7 +158,6 @@ export default function UploadSheet() {
 
   const resetUploadSheet = () => {
     terminalRunIdRef.current = null;
-    multitaxRefreshStartedRef.current = false;
 
     if (validationCompletionTimeoutRef.current) {
       window.clearTimeout(validationCompletionTimeoutRef.current);
@@ -661,8 +659,7 @@ useEffect(() => {
       if (
         !isActive ||
         pollInFlight ||
-        terminalRunIdRef.current === runId ||
-        multitaxRefreshStartedRef.current
+        terminalRunIdRef.current === runId
       ) {
         return;
       }
@@ -672,8 +669,7 @@ useEffect(() => {
         const res = await API.get(`${TAX_PATH}/status/${runId}`);
         if (
           !isActive ||
-          terminalRunIdRef.current === runId ||
-          multitaxRefreshStartedRef.current
+          terminalRunIdRef.current === runId
         ) {
           return;
         }
@@ -716,100 +712,14 @@ useEffect(() => {
           }));
 
           if (isCompleted && !isFailed) {
-            try {
-              multitaxRefreshStartedRef.current = true;
-              setPipelineState((prev) => ({
-                ...prev,
-                phase: "processing",
-                busy: true,
-                message: "Processing MultiTax Calculation...",
-                progress: 100,
-                showValidationSummary: true,
-              }));
-
-              const refreshResponse = await API.post("/multitax/refresh");
-              console.log("Refresh response", refreshResponse?.data);
-              const refreshJobId = refreshResponse?.data?.job_id;
-              console.log("Job ID", refreshJobId);
-
-              if (!refreshJobId) {
-                throw new Error("MultiTax refresh did not return a job_id.");
-              }
-
-              console.log("Starting polling...");
-              while (isActive) {
-                console.log("Polling", refreshJobId);
-                const statusResponse = await API.get("/multitax/refresh/status", {
-                  params: { job_id: refreshJobId },
-                });
-                const refreshStatus = String(statusResponse?.data?.status || "").toLowerCase();
-                const refreshDetail =
-                  statusResponse?.data?.detail ||
-                  statusResponse?.data?.message ||
-                  "MultiTax integration failed.";
-
-                setPipelineState((prev) => ({
-                  ...prev,
-                  phase: "processing",
-                  busy: refreshStatus === "running",
-                  message:
-                    refreshStatus === "completed"
-                      ? "Completed"
-                      : "Process MultiTax Integration...",
-                  progress: 100,
-                  showValidationSummary: true,
-                }));
-
-                if (refreshStatus === "completed") {
-                  setRunId(null);
-                  const result = await showAlert("success", "Completed", "Upload completed successfully.");
-                  if (result?.isConfirmed) {
-                    resetUploadSheet();
-                  }
-                  break;
-                }
-
-                if (refreshStatus === "error") {
-                  const msg = `MultiTax integration failed.${refreshDetail}`;
-                  setRunId(null);
-                  setError(msg);
-                  setPipelineState((prev) => ({
-                    ...prev,
-                    phase: "ready",
-                    busy: false,
-                    message: msg,
-                    progress: 100,
-                    showValidationSummary: true,
-                  }));
-                  await showAlert("error", "MultiTax Integration Failed", msg);
-                  break;
-                }
-
-                await new Promise((resolve) => window.setTimeout(resolve, 3000));
-              }
-            } catch (e) {
-              setRunId(null);
-              const msg =
-                e?.response?.data?.detail ||
-                e?.response?.data?.message ||
-                e?.response?.data?.error ||
-                e?.message ||
-                "MultiTax integration failed.";
-              console.error("[MultiTax] refresh failed:", e);
-              setError(`MultiTax integration failed.${msg}`);
-              setPipelineState((prev) => ({
-                ...prev,
-                phase: "ready",
-                busy: false,
-                message: "MultiTax integration failed.",
-                progress: 100,
-                showValidationSummary: true,
-              }));
-              await showAlert(
-                "error",
-                "MultiTax Integration Failed",
-                `MultiTax integration failed.${msg}`
-              );
+            // A per-tax upload is complete once its database insert succeeds.
+            // Running full MultiTax aggregation here can scan millions of rows
+            // and kept this page in a permanent "Processing" state. It is a
+            // separate operation and must not hide the completed upload.
+            setRunId(null);
+            const result = await showAlert("success", "Completed", "Upload completed successfully.");
+            if (result?.isConfirmed) {
+              resetUploadSheet();
             }
           } else {
             setRunId(null);
@@ -924,7 +834,6 @@ useEffect(() => {
 
     setError("");
     terminalRunIdRef.current = null;
-    multitaxRefreshStartedRef.current = false;
     setPipelineState((prev) => ({
       ...prev,
       phase: "processing",
@@ -1007,7 +916,6 @@ useEffect(() => {
           if (!fallbackRunId) throw new Error("Missing run_id from server.");
 
           terminalRunIdRef.current = null;
-          multitaxRefreshStartedRef.current = false;
           setRunId(fallbackRunId);
           setPipelineState((prev) => ({
             ...prev,

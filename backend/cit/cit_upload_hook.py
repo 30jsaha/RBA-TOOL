@@ -25,6 +25,7 @@ from utils.bulk_insert_utils import (
     table_exists,
 )
 from utils.pipeline_logger import log_step
+from utils.database_locks import financial_data_lock
 from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
 
 
@@ -118,14 +119,17 @@ def save_cit_justification_to_db(
                     message=f'Inserted {inserted_rows} / {all_rows} rows',
                 )
 
-        inserted_rows = chunked_multi_insert(
-            df_to_insert,
-            table_name,
-            engine,
-            table_already_exists=db_table_exists,
-            chunksize=DEFAULT_INSERT_CHUNK_SIZE,
-            progress_callback=_on_chunk,
-        )
+        # Keep reset/refresh from overlapping a multi-chunk insert. Without
+        # this, a reset can finish and this worker can append rows afterwards.
+        with financial_data_lock(engine, timeout_seconds=30):
+            inserted_rows = chunked_multi_insert(
+                df_to_insert,
+                table_name,
+                engine,
+                table_already_exists=db_table_exists,
+                chunksize=DEFAULT_INSERT_CHUNK_SIZE,
+                progress_callback=_on_chunk,
+            )
 
         if not db_table_exists:
             print(f"  Created and populated MySQL table: {table_name}")

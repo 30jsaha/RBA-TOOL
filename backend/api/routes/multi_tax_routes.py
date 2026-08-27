@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from config.db_config import get_mysql_engine
 from utils.auth_helper import get_authenticated_user_id
+from utils.database_locks import financial_data_lock
 
 multi_tax_bp = Blueprint('multi_tax', __name__)
 logger = logging.getLogger(__name__)
@@ -386,7 +387,7 @@ def _build_swt_agg_insert_sql(table_name, use_upsert=False):
     return sql
 
 
-def refresh_multi_tax_tables(current_user_id=None, status_callback=None):
+def _refresh_multi_tax_tables_unlocked(current_user_id=None, status_callback=None):
     logger.info('Starting multi-tax table refresh...')
     engine = get_mysql_engine()
     user_id = current_user_id
@@ -487,6 +488,19 @@ def refresh_multi_tax_tables(current_user_id=None, status_callback=None):
         threading.get_ident(),
         integration_elapsed,
     )
+
+
+def refresh_multi_tax_tables(current_user_id=None, status_callback=None):
+    """Refresh derived data without racing a reset or a source-table insert."""
+    lock_engine = get_mysql_engine()
+    try:
+        with financial_data_lock(lock_engine, timeout_seconds=30):
+            return _refresh_multi_tax_tables_unlocked(
+                current_user_id=current_user_id,
+                status_callback=status_callback,
+            )
+    finally:
+        lock_engine.dispose()
 
 
 scheduler = BackgroundScheduler()
