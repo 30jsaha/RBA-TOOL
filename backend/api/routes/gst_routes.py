@@ -1314,8 +1314,9 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if is_validated_file:
             gst_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'final_output'))
             logical_name = os.path.basename(str(saved_path or ''))
-            with materialize_output_to_tempfile(gst_output_dir, logical_name) as decrypted_input_path:
-                return _run_gst_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
+            if output_exists(gst_output_dir, logical_name):
+                with materialize_output_to_tempfile(gst_output_dir, logical_name) as decrypted_input_path:
+                    return _run_gst_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, is_validated_file=True)
 
         engine = get_mysql_engine()
         log_run_start(engine, run_id, 'GST', filename=os.path.basename(saved_path))
@@ -1489,7 +1490,15 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         return
 
     except Exception as e:
-        log_run_failed(engine, run_id, 'GST', _run_status[run_id].get('step', '?'), e)
+        import traceback
+        print(f"[GST_RUN_PIPELINE ERROR]\n{traceback.format_exc()}")
+        try:
+            if not engine:
+                engine = get_mysql_engine()
+            current_step = _run_status.get(run_id, {}).get('step', '?')
+            log_run_failed(engine, run_id, 'GST', current_step, e)
+        except Exception:
+            pass
         _set_gst_run_status(run_id, {
             'status': 'failed',
             'step': _run_status.get(run_id, {}).get('step', 'Failed'),

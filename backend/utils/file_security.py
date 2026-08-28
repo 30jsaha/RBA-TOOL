@@ -289,17 +289,37 @@ def migrate_plaintext_output(
     return write_encrypted_output_file(plain_path, output_dir, logical_name)
 
 
+def normalize_logical_name(logical_name: str) -> str:
+    name = str(logical_name or "").strip()
+    if name.endswith(ENCRYPTED_SUFFIX):
+        name = name[:-len(ENCRYPTED_SUFFIX)]
+    return name
+
+
 def read_output_bytes(
     output_dir: str | os.PathLike[str],
     logical_name: str,
 ) -> bytes:
-    encrypted_path = encrypted_output_path(output_dir, logical_name)
+    clean_name = normalize_logical_name(logical_name)
+    encrypted_path = encrypted_output_path(output_dir, clean_name)
     if encrypted_path.is_file():
         return decrypt_bytes(encrypted_path.read_bytes())
 
-    plaintext_path = plaintext_output_path(output_dir, logical_name)
+    plaintext_path = plaintext_output_path(output_dir, clean_name)
     if plaintext_path.is_file():
-        return plaintext_path.read_bytes()
+        data = plaintext_path.read_bytes()
+        try:
+            return decrypt_bytes(data)
+        except Exception:
+            return data
+
+    raw_path = Path(output_dir).resolve() / logical_name
+    if raw_path.is_file():
+        data = raw_path.read_bytes()
+        try:
+            return decrypt_bytes(data)
+        except Exception:
+            return data
 
     raise FileNotFoundError(logical_name)
 
@@ -309,7 +329,8 @@ def materialize_output_to_tempfile(
     output_dir: str | os.PathLike[str],
     logical_name: str,
 ) -> Iterator[str]:
-    suffix = Path(logical_name).suffix or ".tmp"
+    clean_name = normalize_logical_name(logical_name)
+    suffix = Path(clean_name).suffix or ".csv"
     temp_root = Path(get_backend_storage_dir("tmp", "decrypted_outputs"))
     temp_root.mkdir(parents=True, exist_ok=True)
 
@@ -323,6 +344,8 @@ def materialize_output_to_tempfile(
         try:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+        except Exception:
+            pass
         except Exception:
             pass
 
