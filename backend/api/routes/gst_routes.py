@@ -1151,37 +1151,45 @@ def validate_gst():
             'errors': result.get('errors', []),
         }
 
-        payload['financial_difference_count'] = int(payload.get('db_financial_differences_count') or 0)
+        payload['financial_difference_count'] = int(
+            payload.get('db_financial_difference_fields_count')
+            or payload.get('db_financial_differences_count')
+            or 0
+        )
         payload['financial_difference_file'] = None
         payload['financial_difference_file_path'] = None
         try:
-            if payload.get('removed_data_file_path') and payload.get('output_dir'):
-                removed_path = payload.get('removed_data_file_path')
+            if payload.get('output_dir') and payload['financial_difference_count'] > 0:
                 conflict_tins = []
-                try:
-                    use_cols = ["tin", "reason", "taxpayer_name"]
-                    df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
-                    if "reason" in df_removed.columns:
-                        mask = df_removed["reason"].astype(str).str.lower().str.contains(
-                            "financial differences found against gst_fraud_justification", na=False
-                        )
-                        df_fin = df_removed.loc[mask]
-                        if "tin" in df_fin.columns:
-                            conflict_tins = df_fin["tin"].dropna().tolist()
-                except Exception:
-                    conflict_tins = []
+                for err in result.get('errors') or []:
+                    reason = str((err or {}).get('reason') or '').lower()
+                    if (
+                        'financial differences found against gst_fraud_justification' in reason
+                        or 'financial values differ from existing gst_fraud_justification record' in reason
+                    ):
+                        tin = str((err or {}).get('tin') or '').strip()
+                        if tin:
+                            conflict_tins.append(tin)
+                conflict_tins = list(dict.fromkeys(conflict_tins))
 
-                if payload['financial_difference_count'] > 0:
+                if conflict_tins:
                     ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    payload['financial_difference_file'] = f'gst_financial_difference_{ts2}.csv'
-                    payload['financial_difference_file_path'] = os.path.abspath(
-                        os.path.join(payload.get('output_dir'), payload.get('financial_difference_file'))
-                    )
-                    _export_upload_conflicts_csv_from_db(
-                        "GST",
-                        conflict_tins,
-                        payload['financial_difference_file_path'],
-                    )
+                    logical_name = f'gst_financial_difference_{ts2}.csv'
+                    fd, temp_csv_path = tempfile.mkstemp(prefix='gst_financial_difference_', suffix='.csv')
+                    os.close(fd)
+                    try:
+                        wrote_csv = _export_upload_conflicts_csv_from_db("GST", conflict_tins, temp_csv_path)
+                        if wrote_csv and os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) > 0:
+                            write_encrypted_output_file(temp_csv_path, payload.get('output_dir'), logical_name)
+                            if output_exists(payload.get('output_dir'), logical_name):
+                                payload['financial_difference_file'] = logical_name
+                                payload['financial_difference_file_path'] = logical_name
+                    finally:
+                        try:
+                            if os.path.exists(temp_csv_path):
+                                os.remove(temp_csv_path)
+                        except Exception:
+                            pass
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
@@ -1236,8 +1244,11 @@ def validate_gst():
                         if db_counts.get(k) is not None:
                             payload[k] = db_counts.get(k)
 
-                    # Keep parity field derived from db_financial_differences_count
-                    payload["financial_difference_count"] = int(payload.get("db_financial_differences_count") or 0)
+                    payload["financial_difference_count"] = int(
+                        payload.get("db_financial_difference_fields_count")
+                        or payload.get("db_financial_differences_count")
+                        or 0
+                    )
 
                 payload["errors"] = _try_fetch_validation_errors(engine, upload_validation_summary_id)
         except Exception as e:

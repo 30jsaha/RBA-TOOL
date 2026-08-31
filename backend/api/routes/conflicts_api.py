@@ -97,6 +97,93 @@ def _has_column(table: str, column: str) -> bool:
         return False
 
 
+def _normalize_identifier(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        normalized = str(value).strip()
+    except Exception:
+        return ""
+    if normalized.endswith(".0") and normalized[:-2].isdigit():
+        normalized = normalized[:-2]
+    return normalized
+
+
+def _coerce_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+
+def _normalize_compare_value(value: object) -> object:
+    try:
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            value = 0
+        return round(float(value), 2)
+    except Exception:
+        try:
+            return str(value).strip()
+        except Exception:
+            return ""
+
+
+def _resolve_gst_source_row_for_conflict(conflict: Any, *, field_name: str) -> Optional[Dict[str, Any]]:
+    conflict_user_id = _coerce_int(conflict.get("user_id"))
+    tin = _normalize_identifier(conflict.get("tin"))
+    assessment_number = _normalize_identifier(conflict.get("assessment_number"))
+    tax_period_year = _coerce_int(conflict.get("tax_period_year"))
+    tax_period_month = _coerce_int(conflict.get("tax_period_month"))
+    expected_batch_id = _normalize_identifier(conflict.get("upload_batch_id"))
+    previous_value = conflict.get("previous_value")
+
+    if conflict_user_id is None or not tin or tax_period_year is None or tax_period_month is None or not assessment_number:
+        return None
+
+    cols_map = _load_table_columns_map("gst_fraud_justification")
+    actual_field = cols_map.get(str(field_name or "").strip().lower())
+    if not actual_field:
+        return None
+
+    where_parts = [
+        "CAST(COALESCE(user_id, 0) AS SIGNED) = :user_id",
+        "TRIM(CAST(tin AS CHAR)) = :tin",
+        "tax_period_year = :tax_period_year",
+        "tax_period_month = :tax_period_month",
+        "TRIM(CAST(assessment_number AS CHAR)) = :assessment_number",
+    ]
+    params: Dict[str, Any] = {
+        "user_id": int(conflict_user_id),
+        "tin": tin,
+        "tax_period_year": tax_period_year,
+        "tax_period_month": tax_period_month,
+        "assessment_number": assessment_number,
+    }
+    if expected_batch_id:
+        where_parts.append("TRIM(CAST(upload_batch_id AS CHAR)) = :upload_batch_id")
+        params["upload_batch_id"] = expected_batch_id
+
+    rows = db.session.execute(
+        text(
+            f"SELECT * FROM `gst_fraud_justification` WHERE {' AND '.join(where_parts)} ORDER BY uploaded_at DESC, id DESC"
+        ),
+        params,
+    ).mappings().fetchall()
+    if not rows:
+        return None
+
+    wanted_value = _normalize_compare_value(previous_value)
+    matches = [row for row in rows if _normalize_compare_value(row.get(actual_field)) == wanted_value]
+    if len(matches) != 1:
+        return None
+    return dict(matches[0])
+
+
 def _ensure_upload_conflicts_audit_columns():
     """
     Phase 2 requires `approved_by` / `rejected_by` columns.
@@ -375,22 +462,63 @@ def approve_conflict(conflict_id: int):
             return jsonify({"status": "error", "message": "Invalid source table"}), 422
 
         source_record_id = conflict.get("source_record_id", None)
-        try:
-            source_record_id_int = int(source_record_id)
-        except Exception:
-            source_record_id_int = None
-
-        if not source_record_id_int:
-            return jsonify({"status": "error", "message": "Source record not found"}), 422
-
-        source_row = db.session.execute(
-            text(f"SELECT * FROM `{source_table}` WHERE id = :id LIMIT 1"),
-            {"id": source_record_id_int},
-        ).mappings().fetchone()
-        if not source_row:
-            return jsonify({"status": "error", "message": "Source record not found"}), 422
+        source_record_id_int = _coerce_int(source_record_id)
 
         field_name_raw = conflict.get("field_name")
+        if not field_name_raw or _is_ignored_field_name(field_name_raw):
+            return jsonify({"status": "error", "message": "Invalid field_name"}), 422
+        field_name = str(field_name_raw).strip()
+
+        source_row = None
+        resolved_upload_batch_id = None
+        should_repair_gst_source = (
+            tax_type == "GST" and source_table == "gst_fraud_justification"
+        )
+
+        if source_record_id_int:
+            source_row = db.session.execute(
+                text(f"SELECT * FROM `{source_table}` WHERE id = :id LIMIT 1"),
+                {"id": source_record_id_int},
+            ).mappings().fetchone()
+            if should_repair_gst_source and source_row:
+                conflict_owner_id = _coerce_int(conflict.get("user_id"))
+                source_owner_id = _coerce_int(source_row.get("user_id"))
+                if conflict_owner_id is not None and source_owner_id is not None and conflict_owner_id != source_owner_id:
+                    source_row = None
+                    source_record_id_int = None
+
+        if not source_row and should_repair_gst_source:
+            resolved_source_row = _resolve_gst_source_row_for_conflict(conflict, field_name=field_name)
+            if resolved_source_row is not None:
+                source_row = resolved_source_row
+                source_record_id_int = _coerce_int(source_row.get("id"))
+                resolved_upload_batch_id = source_row.get("upload_batch_id")
+
+        if not source_record_id_int or not source_row:
+            return jsonify({"status": "error", "message": "Source record not found"}), 422
+
+        if should_repair_gst_source:
+            conflict_owner_id = _coerce_int(conflict.get("user_id"))
+            source_owner_id = _coerce_int(source_row.get("user_id"))
+            if conflict_owner_id is not None and source_owner_id is not None and conflict_owner_id != source_owner_id:
+                return jsonify({"status": "error", "message": "Source record not found"}), 422
+
+        if resolved_upload_batch_id is not None or conflict.get("source_record_id") is None:
+            repair_set = []
+            repair_params: Dict[str, Any] = {"id": int(conflict_id), "source_record_id": int(source_record_id_int)}
+            repair_set.append("source_record_id = :source_record_id")
+            if resolved_upload_batch_id is not None:
+                repair_set.append("upload_batch_id = :upload_batch_id")
+                repair_params["upload_batch_id"] = resolved_upload_batch_id
+            db.session.execute(
+                text(f"UPDATE upload_conflicts SET {', '.join(repair_set)} WHERE id = :id"),
+                repair_params,
+            )
+
+        if not field_name_raw or _is_ignored_field_name(field_name_raw):
+            return jsonify({"status": "error", "message": "Invalid field_name"}), 422
+        field_name = str(field_name_raw).strip()
+
         if not field_name_raw or _is_ignored_field_name(field_name_raw):
             return jsonify({"status": "error", "message": "Invalid field_name"}), 422
         field_name = str(field_name_raw).strip()

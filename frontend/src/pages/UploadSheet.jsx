@@ -480,7 +480,14 @@ useEffect(() => {
     });
 
     setUploadResponse(res.data);
-    setConflictCount(Number(res.data.db_financial_differences_count ?? 0));
+    setConflictCount(
+      Number(
+        res.data.financial_difference_count ??
+          res.data.db_financial_difference_fields_count ??
+          res.data.db_financial_differences_count ??
+          0
+      )
+    );
     setPipelineState((prev) => ({
       ...prev,
       phase: "validation-complete",
@@ -1269,7 +1276,10 @@ useEffect(() => {
                         <div className="mb-3">
                           <strong>Duplicates:</strong> {uploadResponse.db_duplicates_count ?? 0} |{" "}
                           <strong>Financial Differences:</strong>{" "}
-                          {uploadResponse.db_financial_differences_count ?? 0} |{" "}
+                          {uploadResponse.financial_difference_count ??
+                            uploadResponse.db_financial_difference_fields_count ??
+                            uploadResponse.db_financial_differences_count ??
+                            0} |{" "}
                           <strong>TIN Invalid:</strong> {uploadResponse.tin_invalid_count ?? 0} |{" "}
                           <span style={{ marginLeft: 8 }}>
                             {(() => {
@@ -1309,7 +1319,7 @@ useEffect(() => {
                               <strong>Financial Differences (Pending Approval):</strong>{" "}
                               {conflictCount}
                             </div>
-                            {Number(uploadResponse?.financial_difference_count ?? uploadResponse?.db_financial_differences_count ?? 0) > 0 &&
+                            {Number(conflictCount ?? 0) > 0 &&
                               uploadResponse?.financial_difference_file && (
                                 <div className="mb-1">
                                   <Button

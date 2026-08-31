@@ -535,7 +535,11 @@ def validate_cit():
                             if db_counts.get(k) is not None:
                                 payload[k] = db_counts.get(k)
 
-                        payload["financial_difference_count"] = int(payload.get("db_financial_differences_count") or 0)
+                        payload["financial_difference_count"] = int(
+                            payload.get("db_financial_difference_fields_count")
+                            or payload.get("db_financial_differences_count")
+                            or 0
+                        )
 
                     payload["errors"] = _try_fetch_validation_errors(engine, upload_validation_summary_id)
         except Exception as e:
