@@ -1,264 +1,35 @@
-﻿import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import API from "../api/api";
-import {
-  Button,
-  Paper,
-  Alert,
-  LinearProgress,
-  Typography,
-} from "@mui/material";
+import { Alert, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, LinearProgress, MenuItem, Paper, TextField, Typography } from "@mui/material";
 import { FaCloudUploadAlt } from "react-icons/fa";
 
+const PAGE_SIZES = [25, 50, 100];
+const EMPTY = { tin: "", taxpayer_name: "", trade_name: "", enterprise_type: "", province: "", address: "", email: "", phone: "", sector: "", status: "ACTIVE" };
+
 export default function UploadTinRegistration() {
-  const [collapsed, setCollapsed] = useState(false);
-  const [openMenu, setOpenMenu] = useState(null);
-  const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [processing, setProcessing] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState("");
-  const [syncError, setSyncError] = useState("");
-
+  const [collapsed, setCollapsed] = useState(false), [openMenu, setOpenMenu] = useState(null), [file, setFile] = useState(null), [uploading, setUploading] = useState(false), [progress, setProgress] = useState(0), [uploadResult, setUploadResult] = useState(null), [notice, setNotice] = useState({ type: "", text: "" });
+  const [records, setRecords] = useState([]), [loading, setLoading] = useState(true), [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [total, setTotal] = useState(0), [totalPages, setTotalPages] = useState(0), [searchInput, setSearchInput] = useState(""), [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false), [editRecord, setEditRecord] = useState(null), [form, setForm] = useState(EMPTY), [saving, setSaving] = useState(false), [sectors, setSectors] = useState([]);
   const fileInputRef = useRef();
-
-  const handleFileClick = () => fileInputRef.current?.click();
-
-  const handleFileChosen = (chosenFile) => {
-    setError("");
-    setMessage("");
-    setResult(null);
-
-    if (!chosenFile) return;
-
-    const lower = chosenFile.name.toLowerCase();
-    if (!lower.endsWith(".csv") && !lower.endsWith(".xlsx")) {
-      setError("Only CSV and XLSX files are supported.");
-      setFile(null);
-      return;
-    }
-
-    setFile(chosenFile);
-  };
-
-  const handleReset = () => {
-    setFile(null);
-    setUploading(false);
-    setProcessing(false);
-    setProgress(0);
-    setResult(null);
-    setError("");
-    setMessage("");
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-
-  const handleSyncMissing = async () => {
-    setSyncError("");
-    setSyncMessage("");
-    setSyncing(true);
-    try {
-      const payload = result?.missing_tins_payload || [];
-      const res = await API.post("/tin/sync-missing", payload);
-      const count = res.data?.inserted_records ?? 0;
-      setSyncMessage(`${count} records synced successfully`);
-    } catch (err) {
-      setSyncError("Failed to sync TINs");
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handleUpload = async () => {
-    setError("");
-    setMessage("");
-
-    if (!file) {
-      setError("Please select a file first.");
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      setUploading(true);
-      setProcessing(false);
-      setProgress(0);
-
-      const res = await API.post("/upload-tin-reg", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        onUploadProgress: (event) => {
-          if (!event.total) return;
-          const pct = Math.round((event.loaded / event.total) * 100);
-          setProgress(pct);
-          if (pct >= 100) setProcessing(true);
-        },
-      });
-
-      setResult(res.data);
-      setMessage(res.data.message || "Upload processed successfully.");
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setUploading(false);
-      setProcessing(false);
-    }
-  };
-
-  return (
-    <div className="container-fluid">
-      <div className="row">
-        <Header toggleSidebar={() => setCollapsed(!collapsed)} />
-
-        <div className="col-lg-12 col-md-12">
-          <Sidebar
-            collapsed={collapsed}
-            setCollapsed={setCollapsed}
-            openMenu={openMenu}
-            setOpenMenu={setOpenMenu}
-          />
-
-          <main className="main-content mt-5">
-            <div className="container-fluid">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <div className="header-title-page">Upload TIN Registration</div>
-              </div>
-
-              <Paper className="p-4 mb-3">
-                <div
-                  className="border rounded text-center p-4 mb-3 bg-light"
-                  onClick={handleFileClick}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    handleFileChosen(e.dataTransfer.files[0]);
-                  }}
-                  onDragOver={(e) => e.preventDefault()}
-                  style={{ cursor: "pointer" }}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv,.xlsx"
-                    style={{ display: "none" }}
-                    onChange={(e) => handleFileChosen(e.target.files[0])}
-                  />
-                  <FaCloudUploadAlt size={44} className="text-primary mb-2" />
-                  <div className="fw-semibold">
-                    {file ? file.name : "Click or drop CSV/XLSX file here"}
-                  </div>
-                  <div className="text-muted small">CSV or Excel only</div>
-                </div>
-
-                <div className="d-flex gap-2 flex-wrap">
-                  <Button
-                    variant="contained"
-                    color="primary"
-                    onClick={handleUpload}
-                    disabled={!file || uploading}
-                  >
-                    {uploading ? "Uploading..." : "Upload"}
-                  </Button>
-                  <Button variant="outlined" onClick={handleReset}>
-                    Reset
-                  </Button>
-                </div>
-
-                {uploading && (
-                  <div className="mt-3">
-                    {progress < 100 ? (
-                      <LinearProgress variant="determinate" value={progress} />
-                    ) : (
-                      <LinearProgress />
-                    )}
-                    <Typography variant="body2" className="mt-2">
-                      {progress < 100
-                        ? `Uploading: ${progress}%`
-                        : "Upload complete. Processing on server..."}
-                    </Typography>
-                  </div>
-                )}
-
-                {processing && !uploading && (
-                  <div className="mt-3">
-                    <LinearProgress />
-                    <Typography variant="body2" className="mt-2">
-                      Processing on server...
-                    </Typography>
-                  </div>
-                )}
-
-                {error && (
-                  <Alert severity="error" className="mt-3">
-                    {error}
-                  </Alert>
-                )}
-                {message && (
-                  <Alert severity="success" className="mt-3">
-                    {message}
-                  </Alert>
-                )}
-
-                {result && (
-                  <Paper className="p-3 mt-3">
-                    <Typography variant="subtitle1" gutterBottom>
-                      Upload Summary
-                    </Typography>
-                    <div>
-                      <strong>Total Records:</strong> {result.total_records ?? 0}
-                    </div>
-                    <div>
-                      <strong>Inserted:</strong> {result.inserted ?? 0}
-                    </div>
-                    <div>
-                      <strong>Duplicates:</strong> {result.duplicates ?? 0}
-                    </div>
-
-                    <div className="mt-3 d-flex align-items-center gap-2 flex-wrap">
-                      <Button
-                        variant="contained"
-                        color="secondary"
-                        onClick={handleSyncMissing}
-                        disabled={syncing}
-                      >
-                        {syncing ? "Syncing..." : "Sync Missing TINs"}
-                      </Button>
-                      {syncing && <LinearProgress style={{ width: 160 }} />}
-                    </div>
-
-                    {syncMessage && (
-                      <Alert severity="success" className="mt-3">
-                        {syncMessage}
-                      </Alert>
-                    )}
-                    {syncError && (
-                      <Alert severity="error" className="mt-3">
-                        {syncError}
-                      </Alert>
-                    )}
-                  </Paper>
-                )}
-              </Paper>
-            </div>
-          </main>
-        </div>
-
-        <Footer />
-      </div>
-    </div>
-  );
+  const normalizeEnterpriseType = (value) => ({ COMPANY: "Company", INDIVIDUAL: "Individual", GOVERNMENT: "Government" }[String(value || "").trim().toUpperCase()] || "");
+  const show = (type, text) => setNotice({ type, text });
+  const fetchRecords = async () => { try { setLoading(true); const r = await API.get("/tin-master", { params: { page, page_size: pageSize, ...(search ? { search } : {}) } }); setRecords(r.data?.records || []); setTotal(Number(r.data?.total_records || 0)); setTotalPages(Number(r.data?.total_pages || 0)); } catch (e) { setRecords([]); setTotal(0); setTotalPages(0); show("error", e.response?.data?.message || "Unable to load TIN Master records."); } finally { setLoading(false); } };
+  useEffect(() => { fetchRecords(); }, [page, pageSize, search]);
+  useEffect(() => { API.get("/tin-master/sectors").then((r) => setSectors(r.data?.sectors || [])).catch(() => setSectors([])); }, []);
+  useEffect(() => { if (editRecord) setForm((current) => ({ ...current, enterprise_type: normalizeEnterpriseType(current.enterprise_type) })); }, [editRecord]);
+  useEffect(() => { const timer = window.setTimeout(() => { setPage(1); setSearch(searchInput.trim()); }, 400); return () => window.clearTimeout(timer); }, [searchInput]);
+  const chooseFile = (chosen) => { setUploadResult(null); if (!chosen) return; if (!/\.(csv|xls|xlsx)$/i.test(chosen.name)) { show("error", "Only CSV, XLS, and XLSX files are supported."); setFile(null); return; } setFile(chosen); setNotice({ type: "", text: "" }); };
+  const resetUpload = () => { setFile(null); setProgress(0); setUploadResult(null); setNotice({ type: "", text: "" }); if (fileInputRef.current) fileInputRef.current.value = ""; };
+  const uploadFile = async () => { if (!file) return show("error", "Please select a file first."); const data = new FormData(); data.append("file", file); try { setUploading(true); const r = await API.post("/tin-master/import", data, { headers: { "Content-Type": "multipart/form-data" }, onUploadProgress: (e) => e.total && setProgress(Math.round(e.loaded / e.total * 100)) }); setUploadResult(r.data); show("success", r.data?.message || "TIN Master import completed."); await fetchRecords(); } catch (e) { show("error", e.response?.data?.message || "TIN Master import failed."); } finally { setUploading(false); } };
+  const downloadTemplate = async () => { try { const r = await API.get("/tin-master/template", { responseType: "blob" }); const url = URL.createObjectURL(r.data); const link = document.createElement("a"); link.href = url; link.download = "tin_master_import_template.xlsx"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); } catch (e) { show("error", e.response?.data?.message || "Unable to download the template."); } };
+  const updateField = (name, value) => setForm((current) => ({ ...current, [name]: value }));
+  const saveForm = async () => { const fail = (message) => { setFormOpen(false); show("error", message); }; if (!form.tin.trim() || !form.taxpayer_name.trim()) return fail("TIN and Taxpayer Name are required."); try { setSaving(true); if (editRecord) await API.put(`/tin-master/${encodeURIComponent(editRecord.tin)}/status`, { enterprisetype: form.enterprise_type, status: form.status }); else await API.post("/tin-master", form); setFormOpen(false); show("success", editRecord ? "TIN record updated successfully." : "TIN Master record created successfully."); await fetchRecords(); } catch (e) { fail(e.response?.data?.message || "Unable to save TIN Master record."); } finally { setSaving(false); } };
+  const start = total ? (page - 1) * pageSize + 1 : 0, end = Math.min(page * pageSize, total);
+  return <div className="container-fluid"><div className="row"><Header toggleSidebar={() => setCollapsed(!collapsed)} /><div className="col-lg-12 col-md-12"><Sidebar collapsed={collapsed} setCollapsed={setCollapsed} openMenu={openMenu} setOpenMenu={setOpenMenu} /><main className="main-content mt-5"><div className="container-fluid"><div className="header-title-page mb-3">Upload TIN Registration</div>
+    <Paper className="p-4 mb-3"><div className="border rounded text-center p-4 mb-3 bg-light" style={{ cursor: "pointer" }} onClick={() => fileInputRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); chooseFile(e.dataTransfer.files[0]); }}><input ref={fileInputRef} type="file" accept=".csv,.xls,.xlsx" style={{ display: "none" }} onChange={(e) => chooseFile(e.target.files[0])} /><FaCloudUploadAlt size={44} className="text-primary mb-2" /><div className="fw-semibold">{file ? file.name : "Click or drop CSV/XLS/XLSX file here"}</div><div className="text-muted small">Use the TIN Master import template</div></div><div className="d-flex gap-2 flex-wrap"><Button variant="contained" onClick={uploadFile} disabled={!file || uploading}>{uploading ? "Uploading..." : "Upload"}</Button><Button variant="outlined" onClick={resetUpload} disabled={uploading}>Reset</Button><Button variant="outlined" onClick={downloadTemplate}>Download Template</Button><Button variant="contained" color="secondary" onClick={() => { setEditRecord(null); setForm({ ...EMPTY }); setFormOpen(true); }}>Add TIN</Button></div>{uploading && <div className="mt-3"><LinearProgress variant="determinate" value={progress} /><Typography variant="body2" className="mt-2">Uploading: {progress}%</Typography></div>}{notice.text && <Alert severity={notice.type || "info"} className="mt-3">{notice.text}</Alert>}{uploadResult && <Paper className="p-3 mt-3"><Typography variant="subtitle1">Upload Summary</Typography><div>Total Rows: {uploadResult.total_rows ?? 0}</div><div>Inserted: {uploadResult.inserted ?? 0}</div><div>Existing TINs: {uploadResult.duplicate_existing ?? 0}</div><div>Duplicate in File: {uploadResult.duplicate_in_file ?? 0}</div><div>Sector Not Found: {uploadResult.sector_not_found ?? 0}</div><div>Invalid: {uploadResult.invalid ?? 0}</div></Paper>}</Paper>
+    <Paper className="p-3 mb-3"><div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><Typography variant="h6">TIN Master List ({total.toLocaleString()})</Typography><div className="d-flex gap-2"><input className="form-control" style={{ width: "280px" }} placeholder="Search TIN, taxpayer, trade name..." value={searchInput} onChange={(e) => setSearchInput(e.target.value)} /><Button variant="outlined" onClick={() => { setSearchInput(""); setSearch(""); setPage(1); }}>Clear</Button></div></div><div className="table-responsive"><table className="table table-hover align-middle mb-0"><thead><tr><th>TIN</th><th>Taxpayer Name</th><th>Trade Name</th><th>Enterprise Type</th><th>Province</th><th>Status</th><th>Actions</th></tr></thead><tbody>{loading ? <tr><td colSpan="7" className="text-center py-4"><CircularProgress size={28} /></td></tr> : records.length === 0 ? <tr><td colSpan="7" className="text-center text-muted py-4">No records found.</td></tr> : records.map((row, index) => <tr key={`${row.tin}-${index}`}><td>{row.tin}</td><td>{row.taxpayer_name || "-"}</td><td>{row.trade_name || "-"}</td><td>{row.enterprise_type || "-"}</td><td>{row.province || "-"}</td><td><span className={`badge ${row.status === "INACTIVE" ? "bg-secondary" : "bg-success"}`}>{row.status}</span></td><td><Button size="small" variant="outlined" onClick={() => { setEditRecord(row); setForm({ ...EMPTY, ...row }); setFormOpen(true); }}>Edit</Button></td></tr>)}</tbody></table></div><div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3"><span className="small text-muted">Showing {start.toLocaleString()}-{end.toLocaleString()} of {total.toLocaleString()} records</span><div className="d-flex align-items-center gap-2"><select className="form-select form-select-sm" style={{ width: "85px" }} value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>{PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}</select><Button size="small" variant="outlined" disabled={page <= 1} onClick={() => setPage(page - 1)}>Prev</Button><span className="small">Page {page} of {totalPages || 0}</span><Button size="small" variant="outlined" disabled={!totalPages || page >= totalPages} onClick={() => setPage(page + 1)}>Next</Button></div></div></Paper></div></main></div><Footer /></div>
+    <Dialog open={formOpen} onClose={() => !saving && setFormOpen(false)} maxWidth="sm" fullWidth><DialogTitle>{editRecord ? "Edit TIN" : "Add TIN"}</DialogTitle><DialogContent dividers><div className="row g-3 pt-1"><div className="col-md-6"><TextField label="TIN" fullWidth required value={form.tin} disabled={Boolean(editRecord)} onChange={(e) => updateField("tin", e.target.value)} /></div><div className="col-md-6"><TextField label="Taxpayer Name" fullWidth required value={form.taxpayer_name} disabled={Boolean(editRecord)} onChange={(e) => updateField("taxpayer_name", e.target.value)} /></div>{editRecord && <div className="col-md-6"><TextField select label="Enterprise Type" required fullWidth value={form.enterprise_type || ""} onChange={(e) => updateField("enterprise_type", e.target.value)}><MenuItem value="Company">Company</MenuItem><MenuItem value="Individual">Individual</MenuItem><MenuItem value="Government">Government</MenuItem></TextField></div>}{!editRecord && <><div className="col-md-6"><TextField label="Trade Name" fullWidth value={form.trade_name} onChange={(e) => updateField("trade_name", e.target.value)} /></div><div className="col-md-6"><TextField select label="Enterprise Type" required fullWidth value={form.enterprise_type} onChange={(e) => updateField("enterprise_type", e.target.value)}><MenuItem value="Company">Company</MenuItem><MenuItem value="Individual">Individual</MenuItem><MenuItem value="Government">Government</MenuItem></TextField></div><div className="col-md-6"><TextField label="Province" fullWidth value={form.province} onChange={(e) => updateField("province", e.target.value)} /></div><div className="col-md-6"><TextField label="Phone" fullWidth value={form.phone} onChange={(e) => updateField("phone", e.target.value)} /></div><div className="col-md-6"><TextField label="Email" fullWidth value={form.email} onChange={(e) => updateField("email", e.target.value)} /></div><div className="col-md-6"><TextField label="Address" fullWidth value={form.address} onChange={(e) => updateField("address", e.target.value)} /></div><div className="col-md-12"><TextField select label="Sector" required fullWidth value={form.sector} onChange={(e) => updateField("sector", e.target.value)}>{sectors.map((sector) => <MenuItem key={sector.sector_id} value={sector.sector_name}>{sector.sector_name}</MenuItem>)}</TextField></div></>}<div className="col-md-6"><TextField select label="Status" required fullWidth value={form.status} onChange={(e) => updateField("status", e.target.value)}><MenuItem value="ACTIVE">ACTIVE</MenuItem><MenuItem value="INACTIVE">INACTIVE</MenuItem></TextField></div></div></DialogContent><DialogActions><Button onClick={() => setFormOpen(false)} disabled={saving}>Cancel</Button><Button variant="contained" onClick={saveForm} disabled={saving}>{saving ? "Saving..." : "Save"}</Button></DialogActions></Dialog></div>;
 }
-
-
-
-
-
-
-
-
