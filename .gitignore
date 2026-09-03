@@ -59,8 +59,8 @@ build/
 # Backend Execution Outputs & Data Directories
 backend/uploads/*
 !backend/uploads/.gitkeep
-backend/download/*
-!backend/download/.gitkeep
+# backend/download/*
+# !backend/download/.gitkeep
 backend/outputs/*
 !backend/outputs/.gitkeep
 backend/segmented/*
