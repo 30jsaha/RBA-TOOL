@@ -169,7 +169,7 @@ def list_tins():
         params.update(limit=page_size, offset=(page - 1) * page_size)
         rows = db.session.execute(text(f"""
             SELECT tr.tin, tr.taxpayername AS taxpayer_name, tr.maintradename AS trade_name,
-                   tr.enterprisetype AS enterprise_type, tr.province, tr.status,
+                   tr.enterprisetype AS enterprise_type, tr.province, COALESCE(tr.status, 'ACTIVE') AS status,
                    tr.sector_id
             FROM tin_registration_mst tr {where}
             ORDER BY tr.tin ASC LIMIT :limit OFFSET :offset
