@@ -15,6 +15,8 @@ import {
   Card,
   CardContent,
   Typography,
+  Skeleton,
+  Box,
 } from "@mui/material";
 import dayjs from "dayjs";
 import "./css/Dashboard.css";
@@ -34,7 +36,7 @@ export default function Compliance() {
   const [endDate, setEndDate] = useState(dayjs());
   const [searchText, setSearchText] = useState("");
   const [selectedIndustry, setSelectedIndustry] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // State for different chart data
   const [taxFilingData, setTaxFilingData] = useState([]);
@@ -347,6 +349,13 @@ export default function Compliance() {
     return series.some(s => s.data.some(v => v > 0));
   };
 
+  const chartSkeleton = (height) => (
+    <Box>
+      <Skeleton variant="text" width="40%" height={32} />
+      <Skeleton variant="rectangular" height={height} sx={{ borderRadius: 2 }} />
+    </Box>
+  );
+
   // Table columns for detailed views
   const filingColumns = [
     { name: "Industry", selector: (r) => r.enterpriseactivity || "-", sortable: true },
@@ -514,12 +523,21 @@ export default function Compliance() {
                 <Typography variant="subtitle2" color="textSecondary" gutterBottom>
                   {card.title}
                 </Typography>
-                <Typography variant="h4" component="div" sx={{ fontWeight: "bold", color: card.color }}>
-                  {card.value}
-                </Typography>
-                <Typography variant="caption" color="textSecondary">
-                  {card.subtitle}
-                </Typography>
+                {loading ? (
+                  <>
+                    <Skeleton variant="text" width="60%" height={40} />
+                    <Skeleton variant="text" width="80%" height={20} />
+                  </>
+                ) : (
+                  <>
+                    <Typography variant="h4" component="div" sx={{ fontWeight: "bold", color: card.color }}>
+                      {card.value}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      {card.subtitle}
+                    </Typography>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -636,7 +654,9 @@ export default function Compliance() {
                       </button>
                     </div>
                     <div className="card-body">
-                      {taxFilingData.length > 0 && hasChartData(taxFilingSeries) ? (
+                      {loading ? (
+                        chartSkeleton(400)
+                      ) : taxFilingData.length > 0 && hasChartData(taxFilingSeries) ? (
                         <Chart
                           options={taxFilingOptions}
                           series={taxFilingSeries}
@@ -663,7 +683,9 @@ export default function Compliance() {
                       </button>
                     </div>
                     <div className="card-body">
-                      {timelinessData.length > 0 && hasChartData(timelinessSeries) ? (
+                      {loading ? (
+                        chartSkeleton(400)
+                      ) : timelinessData.length > 0 && hasChartData(timelinessSeries) ? (
                         <Chart
                           options={timelinessOptions}
                           series={timelinessSeries}
@@ -678,7 +700,7 @@ export default function Compliance() {
                 </div>
 
                 {/* Profitability Chart (CIT only) */}
-                {taxType === "cit" && (parseFloat(kpiMetrics.profitability_rate) || 0) > 0 && (
+                {taxType === "cit" && (loading || (parseFloat(kpiMetrics.profitability_rate) || 0) > 0) && (
                   <div className="col-lg-6 col-md-12 mb-4 dashboard-card-col">
                     <div className="card dashboard-card">
                       <div className="card-header d-flex justify-content-between align-items-center">
@@ -691,7 +713,9 @@ export default function Compliance() {
                         </button>
                       </div>
                       <div className="card-body">
-                        {profitabilityData.length > 0 && hasChartData(profitabilitySeries) ? (
+                        {loading ? (
+                          chartSkeleton(400)
+                        ) : profitabilityData.length > 0 && hasChartData(profitabilitySeries) ? (
                           <Chart
                             options={profitabilityOptions}
                             series={profitabilitySeries}
@@ -730,7 +754,9 @@ export default function Compliance() {
                           </Select>
                         </FormControl>
                       </div>
-                      {selectedIndustryData ? (
+                      {loading ? (
+                        chartSkeleton(210)
+                      ) : selectedIndustryData ? (
                         <div>
                           <Grid container spacing={2}>
                             <Grid item xs={6}>

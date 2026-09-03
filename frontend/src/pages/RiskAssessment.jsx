@@ -11,6 +11,8 @@ import {
   InputLabel,
   TextField,
   Paper,
+  Skeleton,
+  Box,
 } from "@mui/material";
 import dayjs from "dayjs";
 import "./css/Dashboard.css";
@@ -81,7 +83,9 @@ export default function RiskAssessment() {
   const [endDate, setEndDate] = useState(dayjs().endOf("month"));
 
   const [industryChart, setIndustryChart] = useState({ labels: [], data: [] });
-  const [industryLoading, setIndustryLoading] = useState(false);
+  const [industryLoading, setIndustryLoading] = useState(true);
+  const [riskDataLoading, setRiskDataLoading] = useState(true);
+  const [anomalyLoading, setAnomalyLoading] = useState(true);
   const [selectedSector, setSelectedSector] = useState("");
   const [searchText, setSearchText] = useState("");
 
@@ -201,6 +205,7 @@ export default function RiskAssessment() {
 
   const fetchRiskData = async () => {
     try {
+      setRiskDataLoading(true);
       const params = getParams();
       const [categoryRes, taxpayerRes, topFraudRes] =
         await Promise.all([
@@ -227,11 +232,14 @@ export default function RiskAssessment() {
       setTopFraud(topFraudRes?.data || []);
     } catch (err) {
       console.error("Error fetching dashboard:", err);
+    } finally {
+      setRiskDataLoading(false);
     }
   };
 
   const fetchAnomalyChart = async () => {
     try {
+      setAnomalyLoading(true);
       const res = await API.get(BASE_PATH + "/frequency-anomalies", {
         params: getAnomalyParams(),
       });
@@ -247,6 +255,8 @@ export default function RiskAssessment() {
       });
     } catch (err) {
       console.error("Anomaly API failed:", err);
+    } finally {
+      setAnomalyLoading(false);
     }
   };
 
@@ -476,6 +486,13 @@ export default function RiskAssessment() {
   const safeTaxpayerOptions = ensureChartOptions(taxpayerOptions);
   const safeIndustryOptions = ensureChartOptions(industryOptions);
   const safeAnomalyOptions = ensureChartOptions(anomalyOptions);
+
+  const chartSkeleton = (height) => (
+    <Box>
+      <Skeleton variant="text" width="40%" height={32} />
+      <Skeleton variant="rectangular" height={height} sx={{ borderRadius: 2 }} />
+    </Box>
+  );
 
   const filteredData = topFraud.filter((row) => {
     const term = searchText.toLowerCase();
@@ -799,7 +816,9 @@ export default function RiskAssessment() {
                       </button>
                     </div>
                     <div className="card-body">
-                      {hasCategoryData ? (
+                      {riskDataLoading ? (
+                        chartSkeleton(400)
+                      ) : hasCategoryData ? (
                         safeCategoryOptions ? (
                           <Chart
                             options={safeCategoryOptions}
@@ -845,7 +864,9 @@ export default function RiskAssessment() {
                           </Select>
                         </FormControl>
                       </div>
-                      {hasIndustryData ? (
+                      {industryLoading ? (
+                        chartSkeleton(350)
+                      ) : hasIndustryData ? (
                         safeIndustryOptions ? (
                           <Chart
                             options={safeIndustryOptions}
@@ -873,7 +894,9 @@ export default function RiskAssessment() {
                       </button>
                     </div>
                     <div className="card-body" style={{ overflowX: "auto" }}>
-                      {hasTaxpayerData ? (
+                      {riskDataLoading ? (
+                        chartSkeleton(350)
+                      ) : hasTaxpayerData ? (
                         <div style={{ minWidth: `${taxpayerRisk.labels.length * 60}px` }}>
                           {safeTaxpayerOptions ? (
                             <Chart
@@ -959,7 +982,9 @@ export default function RiskAssessment() {
                           </FormControl>
                         </div>
                       )}
-                      {hasAnomalyData && safeAnomalySeries.length > 0 ? (
+                      {anomalyLoading ? (
+                        chartSkeleton(350)
+                      ) : hasAnomalyData && safeAnomalySeries.length > 0 ? (
                         safeAnomalyOptions ? (
                           <Chart
                             key={anomalyChartKey}
