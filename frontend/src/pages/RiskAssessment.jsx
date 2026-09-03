@@ -13,11 +13,15 @@ import {
   Paper,
   Skeleton,
   Box,
+  Button,
 } from "@mui/material";
 import dayjs from "dayjs";
 import "./css/Dashboard.css";
 import tableCustomStyles from "../components/common/tableStyles";
 import API from "../api/api";
+import EmptyState from "../components/common/EmptyState";
+import TableSkeleton from "../components/common/TableSkeleton";
+import ChartDataCard from "../components/common/ChartDataCard";
 
 import { exportToCSV } from "../utils/exportUtils.jsx";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
@@ -81,6 +85,8 @@ export default function RiskAssessment() {
   const [tenure, setTenure] = useState("1M");
   const [startDate, setStartDate] = useState(dayjs().startOf("month"));
   const [endDate, setEndDate] = useState(dayjs().endOf("month"));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "1M", startDate: dayjs().startOf("month"), endDate: dayjs().endOf("month"), anomalyYear: "", anomalyMonth: "" }));
+  const [chartView, setChartView] = useState({ category: false, industry: false, taxpayer: false, anomaly: false });
 
   const [industryChart, setIndustryChart] = useState({ labels: [], data: [] });
   const [industryLoading, setIndustryLoading] = useState(true);
@@ -121,13 +127,13 @@ export default function RiskAssessment() {
 
   const getParams = () => {
     const params = {
-      taxtype: taxType,
-      range_type: tenure.toUpperCase(),
+      taxtype: appliedFilters.taxType,
+      range_type: appliedFilters.tenure.toUpperCase(),
     };
 
-    if (tenure === "custom" && startDate && endDate) {
-      params.start_date = startDate.format("YYYY-MM-DD");
-      params.end_date = endDate.format("YYYY-MM-DD");
+    if (appliedFilters.tenure === "custom" && appliedFilters.startDate && appliedFilters.endDate) {
+      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
+      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
     }
     return params;
   };
@@ -135,12 +141,12 @@ export default function RiskAssessment() {
   const getAnomalyParams = () => {
     const params = getParams();
 
-    if (anomalyYear) {
-      params.year = anomalyYear;
+    if (appliedFilters.anomalyYear) {
+      params.year = appliedFilters.anomalyYear;
     }
 
-    if (taxType !== "cit" && anomalyMonth) {
-      params.month = anomalyMonth;
+    if (appliedFilters.taxType !== "cit" && appliedFilters.anomalyMonth) {
+      params.month = appliedFilters.anomalyMonth;
     }
 
     return params;
@@ -294,11 +300,7 @@ export default function RiskAssessment() {
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [taxType, tenure, startDate, endDate]);
-
-  useEffect(() => {
-    fetchAnomalyChart();
-  }, [taxType, anomalyYear, anomalyMonth]);
+  }, [appliedFilters]);
 
   const categoryOptions = {
     chart: { type: "bar", toolbar: { show: false } },
@@ -486,6 +488,15 @@ export default function RiskAssessment() {
   const safeTaxpayerOptions = ensureChartOptions(taxpayerOptions);
   const safeIndustryOptions = ensureChartOptions(industryOptions);
   const safeAnomalyOptions = ensureChartOptions(anomalyOptions);
+  const toggleChartView = (key) => setChartView((current) => ({ ...current, [key]: !current[key] }));
+  const categoryRows = categoryChart.labels.map((label, index) => ({ id: `${label}-${index}`, segment: label || "-", total: Number(categoryChart.total_series[index] ?? 0), flagged: Number(categoryChart.flagged_series[index] ?? 0) }));
+  const taxpayerRows = taxpayerRisk.labels.map((label, index) => ({ id: `${label}-${index}`, category: label || "-", total: Number(taxpayerRisk.total_series[index] ?? 0), flagged: Number(taxpayerRisk.flagged_series[index] ?? 0) }));
+  const anomalyRows = safeAnomalyLabels.map((label, index) => ({ id: `${label}-${index}`, category: anomalyDisplayLabels[index] || label || "-", value: Number(safeAnomalySeries[0]?.data?.[index] ?? anomalyChart.values[index] ?? 0) }));
+  const categoryColumns = [{ name: "Segment", selector: (row) => row.segment, sortable: true }, { name: "Total Records", selector: (row) => row.total, sortable: true, right: true }, { name: "Flagged Records", selector: (row) => row.flagged, sortable: true, right: true }];
+  const taxpayerColumns = [{ name: "Category", selector: (row) => row.category, sortable: true }, { name: "Total Taxpayers", selector: (row) => row.total, sortable: true, right: true }, { name: "Risk Flagged", selector: (row) => row.flagged, sortable: true, right: true }];
+  const anomalyColumns = [{ name: "Category", selector: (row) => row.category, sortable: true }, { name: "Risk Anomalies", selector: (row) => row.value, sortable: true, right: true }];
+  const industryRows = selectedIndustry ? [{ id: selectedIndustry.sector, metric: "Total Taxpayers", value: Number(selectedIndustry.total_taxpayers ?? 0) }, { id: `${selectedIndustry.sector}-risk`, metric: "Risk Flagged", value: Number(selectedIndustry.risk_flagged ?? 0) }] : [];
+  const industryColumns = [{ name: "Metric", selector: (row) => row.metric }, { name: "Count", selector: (row) => row.value, right: true }];
 
   const chartSkeleton = (height) => (
     <Box>
@@ -800,6 +811,14 @@ export default function RiskAssessment() {
                       <span>{endDate.format("DD-MM-YYYY")}</span>
                     </div>
                   )}
+                  <Button
+                    size="small"
+                    variant="contained"
+                    disabled={industryLoading || riskDataLoading || anomalyLoading}
+                    onClick={() => setAppliedFilters({ taxType, tenure, startDate, endDate, anomalyYear, anomalyMonth })}
+                  >
+                    Submit
+                  </Button>
                 </div>
               </div>
 
@@ -808,6 +827,7 @@ export default function RiskAssessment() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Risk Breakdown by Category (Segment)</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => toggleChartView("category")}>{chartView.category ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={handleDownloadRiskAByCategoryCSV}
@@ -818,7 +838,7 @@ export default function RiskAssessment() {
                     <div className="card-body">
                       {riskDataLoading ? (
                         chartSkeleton(400)
-                      ) : hasCategoryData ? (
+                      ) : hasCategoryData && chartView.category ? (
                         safeCategoryOptions ? (
                           <Chart
                             options={safeCategoryOptions}
@@ -827,9 +847,7 @@ export default function RiskAssessment() {
                             height={400}
                           />
                         ) : null
-                      ) : (
-                        <div className="no-data-message">There are no records to display</div>
-                      )}
+                      ) : hasCategoryData ? <DataTable columns={categoryColumns} data={categoryRows} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>
@@ -838,6 +856,7 @@ export default function RiskAssessment() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Sector-based Risk (By Industry)</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => toggleChartView("industry")}>{chartView.industry ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={handleDownloadIndustryCSV}
@@ -866,7 +885,7 @@ export default function RiskAssessment() {
                       </div>
                       {industryLoading ? (
                         chartSkeleton(350)
-                      ) : hasIndustryData ? (
+                      ) : hasIndustryData && chartView.industry ? (
                         safeIndustryOptions ? (
                           <Chart
                             options={safeIndustryOptions}
@@ -875,9 +894,7 @@ export default function RiskAssessment() {
                             height={350}
                           />
                         ) : null
-                      ) : (
-                        <div className="no-data-message">There are no records to display</div>
-                      )}
+                      ) : hasIndustryData ? <DataTable columns={industryColumns} data={industryRows} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>
@@ -886,6 +903,7 @@ export default function RiskAssessment() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Total Taxpayers vs Risk Flagged</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => toggleChartView("taxpayer")}>{chartView.taxpayer ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={handleDownloadTaxpayerCSV}
@@ -896,7 +914,7 @@ export default function RiskAssessment() {
                     <div className="card-body" style={{ overflowX: "auto" }}>
                       {riskDataLoading ? (
                         chartSkeleton(350)
-                      ) : hasTaxpayerData ? (
+                      ) : hasTaxpayerData && chartView.taxpayer ? (
                         <div style={{ minWidth: `${taxpayerRisk.labels.length * 60}px` }}>
                           {safeTaxpayerOptions ? (
                             <Chart
@@ -907,9 +925,7 @@ export default function RiskAssessment() {
                             />
                           ) : null}
                         </div>
-                      ) : (
-                        <div className="no-data-message">There are no records to display</div>
-                      )}
+                      ) : hasTaxpayerData ? <DataTable columns={taxpayerColumns} data={taxpayerRows} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>
@@ -918,6 +934,7 @@ export default function RiskAssessment() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Frequency of Risk Anomalies</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => toggleChartView("anomaly")}>{chartView.anomaly ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={handleDownloadAnomaliesCSV}
@@ -984,7 +1001,7 @@ export default function RiskAssessment() {
                       )}
                       {anomalyLoading ? (
                         chartSkeleton(350)
-                      ) : hasAnomalyData && safeAnomalySeries.length > 0 ? (
+                      ) : hasAnomalyData && safeAnomalySeries.length > 0 && chartView.anomaly ? (
                         safeAnomalyOptions ? (
                           <Chart
                             key={anomalyChartKey}
@@ -995,9 +1012,7 @@ export default function RiskAssessment() {
                             width="100%"
                           />
                         ) : null
-                      ) : (
-                        <div className="no-data-message">There are no records to display</div>
-                      )}
+                      ) : hasAnomalyData ? <DataTable columns={anomalyColumns} data={anomalyRows} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>

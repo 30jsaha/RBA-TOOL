@@ -28,6 +28,9 @@ import {
 import dayjs from "dayjs";
 import API from "../api/api";
 import tableCustomStyles from "../components/common/tableStyles";
+import EmptyState from "../components/common/EmptyState";
+import TableSkeleton from "../components/common/TableSkeleton";
+import ChartDataCard from "../components/common/ChartDataCard";
 import "./css/Dashboard.css";
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 
@@ -67,6 +70,8 @@ export default function CommonDashboard() {
 
   const [tinList, setTinList] = useState([]);
   const [selectedTin, setSelectedTin] = useState(null);
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), selectedTin: null }));
+  const [chartView, setChartView] = useState({ taxFlow: false, sector: false, fraudTrend: false, fraudDistribution: false });
   const [tinInputValue, setTinInputValue] = useState("");
   const [tinLoading, setTinLoading] = useState(false);
 
@@ -107,10 +112,10 @@ export default function CommonDashboard() {
 
   const params = useMemo(() => ({
     range_type: "custom",
-    start_date: startDate.format("YYYY-MM-DD"),
-    end_date: endDate.format("YYYY-MM-DD"),
-    ...(selectedTin?.tin && { tin: selectedTin.tin }),
-  }), [endDate, selectedTin, startDate]);
+    start_date: appliedFilters.startDate.format("YYYY-MM-DD"),
+    end_date: appliedFilters.endDate.format("YYYY-MM-DD"),
+    ...(appliedFilters.selectedTin?.tin && { tin: appliedFilters.selectedTin.tin }),
+  }), [appliedFilters]);
 
   const getErrorMessage = useCallback(
     (err) =>
@@ -542,6 +547,11 @@ export default function CommonDashboard() {
   const hasRecordsData = useMemo(() => asArray(records).length > 0, [records]);
   const hasFraudTrendData = useMemo(() => asArray(fraudTrend).length > 0, [fraudTrend]);
   const hasRiskExposureData = useMemo(() => asArray(riskExposure).length > 0, [riskExposure]);
+  const toggleChartView = (key) => setChartView((current) => ({ ...current, [key]: !current[key] }));
+  const taxFlowTableData = useMemo(() => asArray(taxFlow.categories).map((category, index) => ({ id: `${category}-${index}`, period: category, ...Object.fromEntries(asArray(taxFlow.series).map((series, seriesIndex) => [`series_${seriesIndex}`, num(series?.data?.[index])])) })), [taxFlow]);
+  const taxFlowTableColumns = useMemo(() => [{ name: "Period", selector: (row) => row.period, sortable: true }, ...asArray(taxFlow.series).map((series, index) => ({ name: series?.name || `Series ${index + 1}`, selector: (row) => row[`series_${index}`], sortable: true, right: true, format: (row) => row[`series_${index}`].toLocaleString() }))], [taxFlow]);
+  const fraudTrendColumns = useMemo(() => [{ name: "Year", selector: (row) => row.year, sortable: true }, { name: "Fraud Cases", selector: (row) => num(row?.fraud_cases ?? row?.fraudCases ?? row?.count), sortable: true, right: true }], []);
+  const riskExposureColumns = useMemo(() => [{ name: "Risk Status", selector: (row) => row?.predicted_fraud ?? "Unknown", sortable: true }, { name: "Taxpayers", selector: (row) => num(row?.taxpayers), sortable: true, right: true }], []);
   const hasOverviewData = useMemo(
     () => [turnover, profit, tax, etr].some((value) => value !== 0),
     [etr, profit, tax, turnover]
@@ -894,6 +904,17 @@ export default function CommonDashboard() {
                           />
                         </div>
 
+                        <div className="col-12 d-flex justify-content-end mt-2">
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disabled={overviewLoading || (startDate.valueOf() === appliedFilters.startDate.valueOf() && endDate.valueOf() === appliedFilters.endDate.valueOf() && selectedTin?.tin === appliedFilters.selectedTin?.tin)}
+                            onClick={() => setAppliedFilters({ startDate, endDate, selectedTin })}
+                          >
+                            Submit
+                          </Button>
+                        </div>
+
                       </div>
                     </LocalizationProvider>
 
@@ -977,27 +998,18 @@ export default function CommonDashboard() {
 
                       <div className="col-md-12 mt-4">
                         {/* TAX FLOW */}
-                        <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Tax Flow (Income vs Profit vs CIT)</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadTaxFlowCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                          {taxFlowLoading ? (
-                            chartSkeleton(350)
-                          ) : taxFlowError ? null : hasTaxFlowData ? (
+                        <ChartDataCard title="Tax Flow (Income vs Profit vs CIT)" isChartView={chartView.taxFlow} onToggleView={() => toggleChartView("taxFlow")} onDownloadCsv={downloadTaxFlowCsv} loading={taxFlowLoading} hasData={hasTaxFlowData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={Math.max(asArray(taxFlow.series).length + 1, 4)} />} emptyMessage="No records available for the selected criteria"
+                          chartContent={
                             <Chart
                               options={taxFlowOptions}
                               series={taxFlowSeries}
                               type="bar"
                               height={350}
                             />
-                          ) : (
-                            renderNoData()
-                          )}
-                          {renderSectionError(taxFlowError)}
-                        </Paper>
+                          }
+                          tableContent={<DataTable columns={taxFlowTableColumns} data={taxFlowTableData} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                        />
+                        {renderSectionError(taxFlowError)}
                       </div>
                     </div>
 
@@ -1005,17 +1017,8 @@ export default function CommonDashboard() {
                     {/* SECTOR + TOP TINS */}
                     <div className="row mb-4">
                       <div className="col-md-12">
-                        <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Top Sectors by Income</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadTopSectorsCsv}>
-                              CSV
-                            </Button>
-                          </div>
-
-                          {sectorLoading ? (
-                            chartSkeleton(350)
-                          ) : sectorError ? null : hasSectorData ? (
+                        <ChartDataCard title="Top Sectors by Income" isChartView={chartView.sector} onToggleView={() => toggleChartView("sector")} onDownloadCsv={downloadTopSectorsCsv} loading={sectorLoading} hasData={hasSectorData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={sectorColumns.length} />} emptyMessage="No records available for the selected criteria"
+                          chartContent={
                             <div style={{ overflowX: "auto" }}>
                               <div style={{ minWidth: `${sectorData.length * 120}px` }}>
                                 <Chart
@@ -1026,11 +1029,10 @@ export default function CommonDashboard() {
                                 />
                               </div>
                             </div>
-                          ) : (
-                            renderNoData()
-                          )}
-                          {renderSectionError(sectorError)}
-                        </Paper>
+                          }
+                          tableContent={<DataTable columns={sectorColumns} data={sectorData} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                        />
+                        {renderSectionError(sectorError)}
 
                       </div>
                       <div className="col-md-12">
@@ -1059,52 +1061,34 @@ export default function CommonDashboard() {
 
                         {/* Bar Chart */}
                         <div className="col-md-6">
-                          <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Fraud Cases by Year</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadFraudYearCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                              {fraudTrendLoading ? (
-                                chartSkeleton(320)
-                              ) : fraudTrendError ? null : hasFraudTrendData ? (
+                          <ChartDataCard title="Fraud Cases by Year" isChartView={chartView.fraudTrend} onToggleView={() => toggleChartView("fraudTrend")} onDownloadCsv={downloadFraudYearCsv} loading={fraudTrendLoading} hasData={hasFraudTrendData} chartSkeleton={chartSkeleton(320)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                            chartContent={
                                 <Chart
                                   options={fraudBarOptions}
                                   series={fraudBarSeries}
                                   type="bar"
                                   height={320}
                                 />
-                              ) : (
-                                renderNoData()
-                              )}
-                              {renderSectionError(fraudTrendError)}
-                          </Paper>
+                            }
+                            tableContent={<DataTable columns={fraudTrendColumns} data={fraudTrend} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                          />
+                          {renderSectionError(fraudTrendError)}
                         </div>
 
                         {/* Pie Chart */}
                         <div className="col-md-6">
-                          <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Fraud Distribution</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadFraudDistributionCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                              {riskExposureLoading ? (
-                                chartSkeleton(320)
-                              ) : riskExposureError ? null : hasRiskExposureData ? (
+                          <ChartDataCard title="Fraud Distribution" isChartView={chartView.fraudDistribution} onToggleView={() => toggleChartView("fraudDistribution")} onDownloadCsv={downloadFraudDistributionCsv} loading={riskExposureLoading} hasData={hasRiskExposureData} chartSkeleton={chartSkeleton(320)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                            chartContent={
                                 <Chart
                                   options={fraudPieOptions}
                                   series={fraudPieSeries}
                                   type="pie"
                                   height={320}
                                 />
-                              ) : (
-                                renderNoData()
-                              )}
-                              {renderSectionError(riskExposureError)}
-                          </Paper>
+                            }
+                            tableContent={<DataTable columns={riskExposureColumns} data={riskExposure} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                          />
+                          {renderSectionError(riskExposureError)}
                         </div>
 
                       <div className="col-md-12">

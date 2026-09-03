@@ -24,6 +24,9 @@ import {
 import dayjs from "dayjs";
 import "./css/Dashboard.css";
 import tableCustomStyles from "../components/common/tableStyles";
+import EmptyState from "../components/common/EmptyState";
+import TableSkeleton from "../components/common/TableSkeleton";
+import ChartDataCard from "../components/common/ChartDataCard";
 import DataTableExport from "../components/common/DataTableExport";
 import API from "../api/api";
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
@@ -37,6 +40,7 @@ const str = (v, fallback = "-") => (v === null || v === undefined || v === "" ? 
 const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
 const dashboardMemoryCache = new Map();
 const inflightDashboardRequests = new Map();
+const VIEW_KEYS = { salary: "salary", fraud: "fraud", segmentation: "segmentation" };
 const PNGMapSWT = lazy(() => import("../components/maps/PNGMapSWT"));
 
 export default function SwtDashboard() {
@@ -46,6 +50,16 @@ export default function SwtDashboard() {
   const [tenure, setTenure] = useState("1m");
   const [startDate, setStartDate] = useState(dayjs().startOf("month"));
   const [endDate, setEndDate] = useState(dayjs().endOf("month"));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({
+    tenure: "1m",
+    startDate: dayjs().startOf("month"),
+    endDate: dayjs().endOf("month"),
+  }));
+  const [chartView, setChartView] = useState({
+    [VIEW_KEYS.salary]: false,
+    [VIEW_KEYS.fraud]: false,
+    [VIEW_KEYS.segmentation]: false,
+  });
 
   const [summary, setSummary] = useState({});
   const [swtSalaryChart, setSwtSalaryChart] = useState({
@@ -58,6 +72,10 @@ export default function SwtDashboard() {
   const [fraudChart, setFraudChart] = useState({ categories: [], series: [] });
   const [segmentation, setSegmentation] = useState({ labels: [], series: [] });
   const [latestRecords, setLatestRecords] = useState([]);
+  const [recordsPage, setRecordsPage] = useState(1);
+  const [recordsPerPage, setRecordsPerPage] = useState(10);
+  const [recordsTotal, setRecordsTotal] = useState(0);
+  const [recordsLoading, setRecordsLoading] = useState(true);
   const [mapStaticData, setMapStaticData] = useState([]);
   const [selectedProvinceData, setSelectedProvinceData] = useState(null);
   const [searchText, setSearchText] = useState("");
@@ -164,13 +182,13 @@ export default function SwtDashboard() {
   const formatCurrency = useCallback((value) => `K ${Number(value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, []);
 
   const getParams = useCallback(() => {
-    const params = { range_type: tenure };
-    if (tenure === "custom" && startDate && endDate) {
-      params.start_date = startDate.format("YYYY-MM-DD");
-      params.end_date = endDate.format("YYYY-MM-DD");
+    const params = { range_type: appliedFilters.tenure };
+    if (appliedFilters.tenure === "custom" && appliedFilters.startDate && appliedFilters.endDate) {
+      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
+      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
     }
     return params;
-  }, [tenure, startDate, endDate]);
+  }, [appliedFilters]);
 
   const handleTenureChange = useCallback((e) => {
     const val = e.target.value;
@@ -204,6 +222,21 @@ export default function SwtDashboard() {
     setStartDate(start);
     setEndDate(end);
   }, []);
+
+  const canSubmit = tenure !== "custom" || !endDate.isBefore(startDate, "day");
+  const isDashboardSubmitting =
+    sectionLoading.summary ||
+    sectionLoading.sales ||
+    sectionLoading.segmentation ||
+    sectionLoading.risk;
+  const handleSubmitFilters = () => {
+    if (!canSubmit || isDashboardSubmitting) return;
+    setRecordsPage(1);
+    setAppliedFilters({ tenure, startDate, endDate });
+  };
+  const toggleChartView = (key) => {
+    setChartView((current) => ({ ...current, [key]: !current[key] }));
+  };
 
   const handleCsvDownload = async (endpoint, fileName, columns) => {
     try {
@@ -462,26 +495,28 @@ export default function SwtDashboard() {
           }));
         }
       }),
-      getWithTimeout("/swt/dashboard/latest-records", params, {
-        useMemoryCache: true,
-        scope: "dashboard",
-      }).then((latestRes) => {
-        if (requestId !== dashboardRequestIdRef.current) return;
-        setLatestRecords(asArray(latestRes.data?.records));
-      }).catch(handleSectionError).finally(() => {
-        if (requestId === dashboardRequestIdRef.current) {
-          setSectionLoading((prev) => ({
-            ...prev,
-            gst: false,
-          }));
-        }
-      }),
     ]);
 
     if (requestId === dashboardRequestIdRef.current) {
       // All sections loaded
     }
   }, [abortActiveRequests, getParams, getRequestErrorMessage, getWithTimeout]);
+
+  const fetchLatestRecords = useCallback(async (page = recordsPage, pageSize = recordsPerPage) => {
+    setRecordsLoading(true);
+    try {
+      const response = await getWithTimeout("/swt/dashboard/latest-records", {
+        ...getParams(), limit: pageSize, offset: (page - 1) * pageSize,
+      }, { useMemoryCache: true, scope: "records" });
+      setLatestRecords(asArray(response.data?.records));
+      setRecordsTotal(Number(response.data?.pagination?.total ?? 0));
+    } catch (err) {
+      const message = getRequestErrorMessage(err);
+      if (message) setDashboardError(message);
+    } finally {
+      setRecordsLoading(false);
+    }
+  }, [getParams, getRequestErrorMessage, getWithTimeout, recordsPage, recordsPerPage]);
 
   const fetchProvinceData = useCallback(async () => {
     const requestId = provinceRequestIdRef.current + 1;
@@ -546,6 +581,10 @@ export default function SwtDashboard() {
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  useEffect(() => {
+    fetchLatestRecords();
+  }, [fetchLatestRecords]);
 
   useEffect(() => () => abortActiveRequests(), [abortActiveRequests]);
 
@@ -628,7 +667,7 @@ export default function SwtDashboard() {
   const swtVsSalaryOptions = useMemo(() => ({
   chart: {
     type: "line",
-    toolbar: { show: true },
+    toolbar: { show: true, tools: { download: false, selection: false, zoom: true, zoomin: true, zoomout: true, pan: false, reset: true } },
     zoom: { enabled: true }
   },
   stroke: { curve: "smooth", width: 3 },
@@ -672,7 +711,7 @@ export default function SwtDashboard() {
 
   // Fraud Chart (BAR CLEARER THAN HEATMAP)
   const fraudOptions = useMemo(() => ({
-    chart: { type: "bar", toolbar: { show: true } },
+    chart: { type: "bar", toolbar: { show: false } },
     colors: ["#ff4757"],
     plotOptions: { bar: { borderRadius: 6 }},
     xaxis: { categories: fraudChart.categories },
@@ -720,6 +759,41 @@ export default function SwtDashboard() {
     { color: "#F96992", title: "Total SWT Deducted", value: formatCurrency(summary.total_swt_tax_deducted ?? summary.total_swt_deducted ?? summary.swt_tax) },
     { color: "#FFA56D", title: "Effective SWT Rate", value: `${(num(summary.effective_rate ?? summary.effectiveRate) * 100).toFixed(2)}%` },
   ]), [formatCurrency, summary]);
+
+  const buildSeriesRows = (categories, series) => asArray(categories).map((category, rowIndex) => {
+    const row = { id: `${category}-${rowIndex}`, category: str(category) };
+    asArray(series).forEach((item, seriesIndex) => {
+      row[`series_${seriesIndex}`] = Number(item?.data?.[rowIndex] ?? 0);
+    });
+    return row;
+  });
+  const buildSeriesColumns = (label, series, formatter = (value) => value.toLocaleString()) => [
+    { name: label, selector: (row) => row.category, sortable: true, wrap: true },
+    ...asArray(series).map((item, index) => ({
+      name: item?.name || `Series ${index + 1}`,
+      selector: (row) => row[`series_${index}`],
+      sortable: true,
+      right: true,
+      format: (row) => formatter(row[`series_${index}`]),
+    })),
+  ];
+  const salaryTableData = buildSeriesRows(swtSalaryChart.categories, swtSalaryChart.series);
+  const fraudTableData = buildSeriesRows(fraudChart.categories, fraudChart.series);
+  const segmentationTableData = asArray(segmentation.labels).map((label, index) => ({
+    id: `${label}-${index}`,
+    segment: str(label),
+    count: Number(segmentation.series?.[index] ?? 0),
+  }));
+  const salaryTableColumns = buildSeriesColumns("Month", swtSalaryChart.series, formatCurrency);
+  const fraudTableColumns = buildSeriesColumns("Month", fraudChart.series);
+  const segmentationTableColumns = [
+    { name: "Segment", selector: (row) => row.segment, sortable: true, wrap: true },
+    { name: "Count", selector: (row) => row.count, sortable: true, right: true, format: (row) => row.count.toLocaleString() },
+  ];
+  const hasSeriesData = (categories, series) => asArray(categories).length > 0 && asArray(series).some((item) => asArray(item?.data).length > 0);
+  const hasSalaryData = hasSeriesData(swtSalaryChart.categories, swtSalaryChart.series);
+  const hasFraudData = hasSeriesData(fraudChart.categories, fraudChart.series);
+  const hasSegmentationData = asArray(segmentation.labels).length > 0 && asArray(segmentation.series).length > 0;
 
   return (
     <div className="container-fluid">
@@ -827,6 +901,14 @@ export default function SwtDashboard() {
                         <span>{endDate.format("DD-MM-YYYY")}</span>
                       </div>
                     )}
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={handleSubmitFilters}
+                      disabled={!canSubmit || isDashboardSubmitting}
+                    >
+                      Submit
+                    </Button>
                   </div>
                 </div>
 
@@ -862,22 +944,17 @@ export default function SwtDashboard() {
                 {/* Charts */}
                 <div className="row">
                   <div className="col-lg-12 mb-4">
-                    <div className="card">
-                      <div className="card-header">
-                        <div className="d-flex justify-content-between align-items-center">
-                          <span>Salary Wages Paid vs SWT Deducted</span>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="primary"
-                            startIcon={<TableChartIcon />}
-                            onClick={downloadSalaryVsSwtCsv}
-                          >
-                            CSV
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="card-body">
+                    <ChartDataCard
+                      title="Salary Wages Paid vs SWT Deducted"
+                      isChartView={chartView[VIEW_KEYS.salary]}
+                      onToggleView={() => toggleChartView(VIEW_KEYS.salary)}
+                      onDownloadCsv={downloadSalaryVsSwtCsv}
+                      loading={sectionLoading.sales}
+                      hasData={hasSalaryData}
+                      chartSkeleton={chartSkeleton(380)}
+                      tableSkeleton={<TableSkeleton columnCount={Math.max(swtSalaryChart.series.length + 1, 3)} />}
+                      emptyMessage="No records available for the selected criteria"
+                      chartContent={<>
                         <div className="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
                           <Typography variant="body2" color="text.secondary">
                             {swtSalaryChart.selectedTin
@@ -901,9 +978,7 @@ export default function SwtDashboard() {
                             </Select>
                           </FormControl>
                         </div>
-                        {sectionLoading.sales ? (
-                          chartSkeleton(380)
-                        ) : asArray(swtSalaryChart.chartData).length ? (
+                        {asArray(swtSalaryChart.chartData).length ? (
                           <div
                             style={{
                               overflowX: "auto",
@@ -927,36 +1002,16 @@ export default function SwtDashboard() {
                               />
                             </div>
                           </div>
-                        ) : (
-                          <div className="text-center text-muted py-5">
-                            No SWT salary comparison data found
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                        ) : <EmptyState message="No records available for the selected criteria" />}
+                      </>}
+                      tableContent={<DataTable columns={salaryTableColumns} data={salaryTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
+                    />
                   </div>
 
                   {/* Fraud bar chart - Matches Dashboard.jsx styling */}
                   <div className="col-lg-6 mb-4">
-                    <div className="card">
-                      <div className="card-header">
-                        <div className="d-flex justify-content-between align-items-center">
-                          <span>Fraud / Red Flag Cases (Monthly)</span>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="primary"
-                            startIcon={<TableChartIcon />}
-                            onClick={downloadFraudMonthlyCsv}
-                          >
-                            CSV
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="card-body" style={{ overflowX: "auto" }}>
-                        {sectionLoading.risk ? (
-                          chartSkeleton(350)
-                        ) : (
+                    <ChartDataCard title="Fraud / Red Flag Cases (Monthly)" isChartView={chartView[VIEW_KEYS.fraud]} onToggleView={() => toggleChartView(VIEW_KEYS.fraud)} onDownloadCsv={downloadFraudMonthlyCsv} loading={sectionLoading.risk} hasData={hasFraudData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={Math.max(fraudChart.series.length + 1, 2)} />} emptyMessage="No records available for the selected criteria"
+                      chartContent={<div style={{ overflowX: "auto" }}>
                           <div style={{ minWidth: `${Math.max(fraudChart.categories.length, 1) * 60}px` }}>
                             <Chart
                               options={fraudOptions}
@@ -965,36 +1020,17 @@ export default function SwtDashboard() {
                               height={350}
                             />
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        </div>}
+                      tableContent={<DataTable columns={fraudTableColumns} data={fraudTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
+                    />
                   </div>
 
                   {/* Segmentation - Matches Dashboard.jsx styling */}
                   <div className="col-lg-6 mb-4">
-                    <div className="card">
-                      <div className="card-header">
-                        <div className="d-flex justify-content-between align-items-center">
-                          <span>Segmentation Distribution</span>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="primary"
-                            startIcon={<TableChartIcon />}
-                            onClick={downloadSegmentationCsv}
-                          >
-                            CSV
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="card-body">
-                        {sectionLoading.segmentation ? (
-                          chartSkeleton(350)
-                        ) : (
-                          <Chart options={segmentationOptions} series={[{ data: segmentation.series }]} type="bar" height={350} />
-                        )}
-                      </div>
-                    </div>
+                    <ChartDataCard title="Segmentation Distribution" isChartView={chartView[VIEW_KEYS.segmentation]} onToggleView={() => toggleChartView(VIEW_KEYS.segmentation)} onDownloadCsv={downloadSegmentationCsv} loading={sectionLoading.segmentation} hasData={hasSegmentationData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                      chartContent={<Chart options={segmentationOptions} series={[{ data: segmentation.series }]} type="bar" height={350} />}
+                      tableContent={<DataTable columns={segmentationTableColumns} data={segmentationTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
+                    />
                   </div>
                 </div>
 
@@ -1157,10 +1193,18 @@ export default function SwtDashboard() {
                   columns={columns}
                   data={filteredRecords}
                   pagination
+                  paginationServer
+                  paginationTotalRows={recordsTotal}
+                  paginationPerPage={recordsPerPage}
+                  onChangePage={(page) => setRecordsPage(page)}
+                  onChangeRowsPerPage={(pageSize) => {
+                    setRecordsPerPage(pageSize);
+                    setRecordsPage(1);
+                  }}
                   customStyles={tableCustomStyles}
                   dense
                   striped
-                  progressPending={sectionLoading.gst}
+                  progressPending={recordsLoading}
                   progressComponent={<Box sx={{ py: 6, display: "flex", justifyContent: "center" }}><CircularProgress size={28} /></Box>}
                 />
               </Paper>

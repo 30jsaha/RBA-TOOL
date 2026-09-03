@@ -616,7 +616,7 @@ def segmentation_distribution():
         _log_timing("segmentation_distribution", started_at)
 
 
-def _build_latest_swt_records_data(date_params):
+def _build_latest_swt_records_data(date_params, limit=50, offset=0):
     query = text(f"""
         SELECT 
             p.tin,
@@ -634,10 +634,10 @@ def _build_latest_swt_records_data(date_params):
             ON CAST(p.tin AS CHAR(50) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci =
                CONVERT(sm.tin USING utf8mb4) COLLATE utf8mb4_unicode_ci
         WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
-        ORDER BY p.uploaded_at DESC
-        LIMIT 20
+        ORDER BY p.uploaded_at DESC, p.id DESC
+        LIMIT :limit OFFSET :offset
     """)
-    rows = db.session.execute(query, date_params).fetchall()
+    rows = db.session.execute(query, {**date_params, "limit": limit, "offset": offset}).fetchall()
     return [
         {
             "tin": r.tin,
@@ -661,19 +661,32 @@ def latest_swt_records():
     date_params = None
     try:
         date_params = _get_period_bounds()
+        try:
+            limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            offset = 0
 
         def build_payload():
-            data = _build_latest_swt_records_data(date_params)
+            data = _build_latest_swt_records_data(date_params, limit, offset)
+            total = db.session.execute(text(f"""
+                SELECT COUNT(*) FROM swt_fraud_justification p
+                WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
+            """), date_params).scalar() or 0
             return {
                 "status": "success",
                 "total_records": len(data),
                 "excel_download": url_for('dashboard_swt.download_latest_swt_records_excel', **request.args),
                 "records": data,
+                "pagination": {"limit": limit, "offset": offset, "total": total, "has_more": offset + len(data) < total},
             }
 
         payload = _cached_json(
             "latest_records",
-            date_params,
+            {**date_params, "limit": limit, "offset": offset},
             900,
             build_payload,
         )
