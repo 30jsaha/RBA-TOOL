@@ -46,3 +46,4 @@ backend/tests/*
 backend/cit/data/*
 backend/gst/data/*
 backend/swt/data/*
+backend/swt/logs/pipeline_summary_report.txt
