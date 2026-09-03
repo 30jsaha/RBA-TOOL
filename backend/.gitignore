@@ -24,8 +24,8 @@ upload_history.log
 # Upload & Data Output Directories
 uploads/*
 !uploads/.gitkeep
-download/*
-!download/.gitkeep
+# download/*
+# !download/.gitkeep
 outputs/*
 !outputs/.gitkeep
 segmented/*
@@ -46,3 +46,4 @@ backend/tests/*
 backend/cit/data/*
 backend/gst/data/*
 backend/swt/data/*
+backend/swt/logs/pipeline_summary_report.txt
