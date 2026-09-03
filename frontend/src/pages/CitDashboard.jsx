@@ -12,6 +12,7 @@ import {
   InputLabel,
   MenuItem,
   Select,
+  TextField,
   Paper,
   Button,
   Tooltip,
@@ -25,7 +26,6 @@ import dayjs from "dayjs";
 import API from "../api/api";
 import tableCustomStyles from "../components/common/tableStyles";
 import "./css/Dashboard.css";
-import DescriptionIcon from "@mui/icons-material/Description";  // Excel icon
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -80,6 +80,7 @@ export default function CitDashboard() {
   const [salesDetailsError, setSalesDetailsError] = useState("");
   const [selectedSalesYear, setSelectedSalesYear] = useState(null);
   const [latestRecords, setLatestRecords] = useState([]);
+  const [searchText, setSearchText] = useState("");
 
   const [mapStaticData, setMapStaticData] = useState([]);
   const [selectedProvinceData, setSelectedProvinceData] = useState(null);
@@ -844,6 +845,12 @@ export default function CitDashboard() {
     { name: "Fraud Status", selector: (r) => str(r?.predicted_fraud, "Unknown"), sortable: true, wrap: true },
   ]), []);
 
+  const filteredLatestRecords = useMemo(() => asArray(latestRecords).filter((row) =>
+    Object.values(row || {}).some((value) =>
+      (value ?? "").toString().toLowerCase().includes(searchText.toLowerCase())
+    )
+  ), [latestRecords, searchText]);
+
   const modalOffset = collapsed ? 75 : 250;
   const modalMaxWidth = `calc(100vw - ${modalOffset + 48}px)`;
 
@@ -1191,21 +1198,28 @@ export default function CitDashboard() {
               </div>
               <div className="col-12 mt-3">
                 <Paper className="p-3">
-                  <div className="d-flex justify-content-between mb-2 align-items-center">
+                  <div className="d-flex justify-content-between mb-3 align-items-center">
                     <h6 className="fw-bold mb-0">Latest CIT Records</h6>
+                    <TextField
+                      size="small"
+                      placeholder="Search..."
+                      value={searchText}
+                      onChange={(e) => setSearchText(e.target.value)}
+                    />
                     <Button
                       size="small"
                       variant="outlined"
                       color="primary"
-                      startIcon={<DescriptionIcon />}
+                      startIcon={<TableChartIcon />}
                       onClick={downloadLatestRecordsCsv}
+                      className="hideme"
                     >
-                      Download Latest Records
+                      CSV
                     </Button>
                   </div>
                   <DataTable
                     columns={latestRecordsCols}
-                    data={latestRecords}
+                    data={filteredLatestRecords}
                     pagination
                     dense
                     striped

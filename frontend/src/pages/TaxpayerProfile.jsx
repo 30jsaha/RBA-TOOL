@@ -45,6 +45,11 @@ const monthLabel = (year, month) => {
   return dayjs(`${year}-${String(month).padStart(2, "0")}-01`).format("YYYY MMMM");
 };
 
+const formatFlagged = (flagged) => {
+  if (flagged === 1 || flagged === "1") return "Yes";
+  if (flagged === 0 || flagged === "0") return "No";
+  return flagged ?? "-";
+};
 
 export default function TaxpayerProfile() {
   const [collapsed, setCollapsed] = useState(false);
@@ -294,7 +299,7 @@ export default function TaxpayerProfile() {
     },
     {
       name: "Flagged",
-      selector: (row) => row.flagged ?? "-",
+      selector: (row) => formatFlagged(row.flagged),
       sortable: true,
       sortField: "flagged",
     },
@@ -655,7 +660,7 @@ export default function TaxpayerProfile() {
                                     <th>Month</th>
                                     <th>Income</th>
                                     <th>Tax</th>
-                                    <th>Segment</th>
+                                    <th>Taxpayer Type</th>
                                     <th>Flag</th>
                                   </tr>
                                 </thead>
