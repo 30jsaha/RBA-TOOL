@@ -10,6 +10,8 @@ from flask import Blueprint, Response, current_app, jsonify, request, has_app_co
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from ..extensions import db
+from .multi_tax_routes import refresh_multi_tax_tables
+from utils.auth_helper import get_authenticated_user_id
 
 bp = Blueprint("dashboard_common", __name__, url_prefix="/api/common-dashboard")
 download_bp = Blueprint("dashboard_common_download", __name__, url_prefix="/api/common/download-csv")
@@ -534,15 +536,16 @@ def _run_summary_rebuild():
         raise
 
 
-def _background_summary_rebuild_worker(app):
+def _background_summary_rebuild_worker(app, current_user_id):
     with app.app_context():
         engine = db.engine
         lock_conn = None
         lock_acquired = False
+        integration_completed = False
         _SUMMARY_WORKER_STATE["running"] = True
         _SUMMARY_WORKER_STATE["thread_name"] = threading.current_thread().name
         _SUMMARY_WORKER_STATE["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        current_app.logger.info("Common dashboard rebuild worker started thread=%s", threading.current_thread().name)
+        current_app.logger.info("Common dashboard refresh worker started thread=%s", threading.current_thread().name)
         try:
             lock_conn = engine.connect()
             lock_acquired = _acquire_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME, timeout_seconds=0)
@@ -551,21 +554,83 @@ def _background_summary_rebuild_worker(app):
                 _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message="Dashboard summary rebuild worker could not acquire rebuild lock.", worker_running=False)
                 current_app.logger.warning("Dashboard summary rebuild skipped because another rebuild owns the lock.")
                 return
-            _update_summary_status(engine, status="running", current_step="Worker rebuilding", worker_running=True)
-            current_app.logger.info("Common dashboard rebuild worker rebuilding")
+            def _multitax_status_callback(**updates):
+                stage = updates.get("stage")
+                detail = updates.get("detail")
+                progress_by_stage = {
+                    "refresh_started": 10,
+                    "aggregation_complete": 35,
+                    "integration_started": 45,
+                    "integration_completed": 60,
+                }
+                step_by_stage = {
+                    "refresh_started": "Refreshing Multi-Tax aggregates",
+                    "aggregation_complete": "Multi-Tax aggregation complete",
+                    "integration_started": "Running Multi-Tax Integration",
+                    "integration_completed": "Multi-Tax Integration complete",
+                }
+                if updates.get("status") == "error":
+                    _update_summary_status(
+                        engine,
+                        status="failed",
+                        progress=0,
+                        current_step="Multi-Tax Integration failed",
+                        completed_at=datetime.now(),
+                        error_message=(
+                            "Multi-Tax Integration failed. Dashboard summary was not rebuilt. "
+                            f"{detail or ''}"
+                        ).strip(),
+                        worker_running=False,
+                    )
+                    return
+                _update_summary_status(
+                    engine,
+                    status="running",
+                    progress=progress_by_stage.get(stage, 5),
+                    current_step=step_by_stage.get(stage, "Preparing Multi-Tax Integration"),
+                    worker_running=True,
+                )
+
+            _update_summary_status(
+                engine,
+                status="running",
+                progress=5,
+                current_step="Preparing Multi-Tax Integration",
+                worker_running=True,
+            )
+            current_app.logger.info("Common dashboard refresh worker starting Multi-Tax Integration")
+            refresh_multi_tax_tables(
+                current_user_id=current_user_id,
+                status_callback=_multitax_status_callback,
+            )
+            integration_completed = True
+            _update_summary_status(
+                engine,
+                status="running",
+                progress=65,
+                current_step="Rebuilding dashboard summary",
+                worker_running=True,
+            )
+            current_app.logger.info("Common dashboard refresh worker rebuilding summary after Multi-Tax Integration")
             _run_summary_rebuild()
-            current_app.logger.info("Common dashboard rebuild worker finished successfully")
+            current_app.logger.info("Common dashboard refresh worker finished successfully")
         except Exception as exc:
             tb = traceback.format_exc()
-            current_app.logger.exception("Dashboard summary rebuild failed.")
-            _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=str(exc), last_traceback=tb, worker_running=False)
+            current_app.logger.exception("Common dashboard refresh failed.")
+            error_message = str(exc)
+            if not integration_completed:
+                error_message = (
+                    "Multi-Tax Integration failed. Dashboard summary was not rebuilt. "
+                    f"{error_message}"
+                )
+            _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=error_message, last_traceback=tb, worker_running=False)
         finally:
             if lock_acquired and lock_conn is not None:
                 _release_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME)
             if lock_conn is not None:
                 lock_conn.close()
             _SUMMARY_WORKER_STATE["running"] = False
-            current_app.logger.info("Common dashboard rebuild worker stopped thread=%s", threading.current_thread().name)
+            current_app.logger.info("Common dashboard refresh worker stopped thread=%s", threading.current_thread().name)
 
 
 def _summary_rows(query_sql, params):
@@ -581,6 +646,7 @@ def _summary_data(rows, mapping):
 def rebuild_summary():
     engine = db.engine
     app = current_app._get_current_object()
+    current_user_id = get_authenticated_user_id()
     current_app.logger.info("Common dashboard rebuild start requested")
     try:
         with _SUMMARY_THREAD_LOCK:
@@ -602,7 +668,7 @@ def rebuild_summary():
                     conn.execute(text(f"UPDATE {SUMMARY_STATUS_TABLE} SET status = 'queued', progress = 0, current_step = 'Queued', started_at = NOW(), completed_at = NULL, error_message = NULL, last_sql = NULL, last_traceback = NULL, source_rows = NULL, temp_rows = NULL, live_rows = NULL, elapsed_ms = NULL, tmp_table_name = NULL, worker_running = 1, updated_at = NOW() WHERE id = 1"))
                 finally:
                     _release_named_lock(conn, SUMMARY_REBUILD_LOCK_NAME)
-            worker = threading.Thread(target=_background_summary_rebuild_worker, args=(app,), daemon=True, name="multitax-dashboard-summary-rebuild")
+            worker = threading.Thread(target=_background_summary_rebuild_worker, args=(app, current_user_id), daemon=True, name="multitax-dashboard-summary-rebuild")
             worker.start()
             current_app.logger.info("Common dashboard rebuild worker thread started thread=%s alive=%s", worker.name, worker.is_alive())
             if not worker.is_alive():

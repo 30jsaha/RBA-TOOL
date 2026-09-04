@@ -1,6 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import Swal from "sweetalert2";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -71,6 +72,7 @@ export default function CommonDashboard() {
   const [tinList, setTinList] = useState([]);
   const [selectedTin, setSelectedTin] = useState(null);
   const [appliedFilters, setAppliedFilters] = useState(() => ({ startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), selectedTin: null }));
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [chartView, setChartView] = useState({ taxFlow: false, sector: false, fraudTrend: false, fraudDistribution: false });
   const [tinInputValue, setTinInputValue] = useState("");
   const [tinLoading, setTinLoading] = useState(false);
@@ -83,13 +85,13 @@ export default function CommonDashboard() {
   const [topTins, setTopTins] = useState([]);
   const [records, setRecords] = useState([]);
   const [fraudTrend, setFraudTrend] = useState([]);
-  const [overviewLoading, setOverviewLoading] = useState(true);
-  const [taxFlowLoading, setTaxFlowLoading] = useState(true);
-  const [riskExposureLoading, setRiskExposureLoading] = useState(true);
-  const [sectorLoading, setSectorLoading] = useState(true);
-  const [topTinsLoading, setTopTinsLoading] = useState(true);
-  const [recordsLoading, setRecordsLoading] = useState(true);
-  const [fraudTrendLoading, setFraudTrendLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [taxFlowLoading, setTaxFlowLoading] = useState(false);
+  const [riskExposureLoading, setRiskExposureLoading] = useState(false);
+  const [sectorLoading, setSectorLoading] = useState(false);
+  const [topTinsLoading, setTopTinsLoading] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [fraudTrendLoading, setFraudTrendLoading] = useState(false);
   const [overviewError, setOverviewError] = useState("");
   const [taxFlowError, setTaxFlowError] = useState("");
   const [riskExposureError, setRiskExposureError] = useState("");
@@ -110,12 +112,14 @@ export default function CommonDashboard() {
   });
   const [summaryDialogOpen, setSummaryDialogOpen] = useState(false);
 
-  const params = useMemo(() => ({
+  const buildParams = (filters) => ({
     range_type: "custom",
-    start_date: appliedFilters.startDate.format("YYYY-MM-DD"),
-    end_date: appliedFilters.endDate.format("YYYY-MM-DD"),
-    ...(appliedFilters.selectedTin?.tin && { tin: appliedFilters.selectedTin.tin }),
-  }), [appliedFilters]);
+    start_date: filters.startDate.format("YYYY-MM-DD"),
+    end_date: filters.endDate.format("YYYY-MM-DD"),
+    ...(filters.selectedTin?.tin && { tin: filters.selectedTin.tin }),
+  });
+
+  const params = useMemo(() => buildParams(appliedFilters), [appliedFilters]);
 
   const getErrorMessage = useCallback(
     (err) =>
@@ -242,11 +246,11 @@ export default function CommonDashboard() {
   );
 
   /* ================= API CALL ================= */
-  const loadOverview = useCallback(async (fetchId) => {
+  const loadOverview = useCallback(async (fetchId, requestParams) => {
     setOverviewLoading(true);
     setOverviewError("");
     try {
-      const overviewRes = await API.get("/common-dashboard/financial-overview", { params });
+      const overviewRes = await API.get("/common-dashboard/financial-overview", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setOverview(overviewRes.data || {});
       });
@@ -260,13 +264,13 @@ export default function CommonDashboard() {
         setOverviewLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadTaxFlow = useCallback(async (fetchId) => {
+  const loadTaxFlow = useCallback(async (fetchId, requestParams) => {
     setTaxFlowLoading(true);
     setTaxFlowError("");
     try {
-      const flowRes = await API.get("/common-dashboard/tax-flow", { params });
+      const flowRes = await API.get("/common-dashboard/tax-flow", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setTaxFlow({
           categories: flowRes.data?.categories ?? [],
@@ -283,13 +287,13 @@ export default function CommonDashboard() {
         setTaxFlowLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadRiskExposure = useCallback(async (fetchId) => {
+  const loadRiskExposure = useCallback(async (fetchId, requestParams) => {
     setRiskExposureLoading(true);
     setRiskExposureError("");
     try {
-      const riskRes = await API.get("/common-dashboard/risk-exposure", { params });
+      const riskRes = await API.get("/common-dashboard/risk-exposure", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setRiskExposure(asArray(riskRes.data));
       });
@@ -303,13 +307,13 @@ export default function CommonDashboard() {
         setRiskExposureLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadSectorAnalysis = useCallback(async (fetchId) => {
+  const loadSectorAnalysis = useCallback(async (fetchId, requestParams) => {
     setSectorLoading(true);
     setSectorError("");
     try {
-      const sectorRes = await API.get("/common-dashboard/sector-analysis", { params });
+      const sectorRes = await API.get("/common-dashboard/sector-analysis", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setSectorData(asArray(sectorRes.data));
       });
@@ -323,13 +327,13 @@ export default function CommonDashboard() {
         setSectorLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadTopFinancialTins = useCallback(async (fetchId) => {
+  const loadTopFinancialTins = useCallback(async (fetchId, requestParams) => {
     setTopTinsLoading(true);
     setTopTinsError("");
     try {
-      const topRes = await API.get("/common-dashboard/top-financial-tins", { params });
+      const topRes = await API.get("/common-dashboard/top-financial-tins", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setTopTins(asArray(topRes.data));
       });
@@ -343,13 +347,13 @@ export default function CommonDashboard() {
         setTopTinsLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadConsolidated = useCallback(async (fetchId) => {
+  const loadConsolidated = useCallback(async (fetchId, requestParams) => {
     setRecordsLoading(true);
     setRecordsError("");
     try {
-      const recordsRes = await API.get("/common-dashboard/consolidated-records", { params });
+      const recordsRes = await API.get("/common-dashboard/consolidated-records", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setRecords(asArray(recordsRes.data));
       });
@@ -363,13 +367,13 @@ export default function CommonDashboard() {
         setRecordsLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadFraudTrend = useCallback(async (fetchId) => {
+  const loadFraudTrend = useCallback(async (fetchId, requestParams) => {
     setFraudTrendLoading(true);
     setFraudTrendError("");
     try {
-      const fraudRes = await API.get("/common-dashboard/fraud-trend", { params });
+      const fraudRes = await API.get("/common-dashboard/fraud-trend", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setFraudTrend(asArray(fraudRes.data));
       });
@@ -383,7 +387,7 @@ export default function CommonDashboard() {
         setFraudTrendLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
   const loadTinOptions = useCallback(async (query = "") => {
     setTinLoading(true);
@@ -409,25 +413,19 @@ export default function CommonDashboard() {
     }
   }, []);
 
-  useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      loadTinOptions(tinInputValue.trim());
-    }, 300);
-
-    return () => window.clearTimeout(timerId);
-  }, [loadTinOptions, tinInputValue]);
-
-  const reloadDashboard = useCallback(() => {
+  const reloadDashboard = useCallback((requestParams = params) => {
     const fetchId = fetchSequenceRef.current + 1;
     fetchSequenceRef.current = fetchId;
 
-    loadOverview(fetchId);
-    loadTaxFlow(fetchId);
-    loadRiskExposure(fetchId);
-    loadSectorAnalysis(fetchId);
-    loadTopFinancialTins(fetchId);
-    loadConsolidated(fetchId);
-    loadFraudTrend(fetchId);
+    return Promise.all([
+      loadOverview(fetchId, requestParams),
+      loadTaxFlow(fetchId, requestParams),
+      loadRiskExposure(fetchId, requestParams),
+      loadSectorAnalysis(fetchId, requestParams),
+      loadTopFinancialTins(fetchId, requestParams),
+      loadConsolidated(fetchId, requestParams),
+      loadFraudTrend(fetchId, requestParams),
+    ]);
   }, [
     loadConsolidated,
     loadFraudTrend,
@@ -436,6 +434,7 @@ export default function CommonDashboard() {
     loadSectorAnalysis,
     loadTaxFlow,
     loadTopFinancialTins,
+    params,
   ]);
 
   const loadSummaryStatus = useCallback(async ({ silent = false } = {}) => {
@@ -476,14 +475,6 @@ export default function CommonDashboard() {
   }, [getErrorMessage, loadSummaryStatus]);
 
   useEffect(() => {
-    reloadDashboard();
-  }, [reloadDashboard]);
-
-  useEffect(() => {
-    loadSummaryStatus({ silent: true });
-  }, [loadSummaryStatus]);
-
-  useEffect(() => {
     const isRunning = summaryStatus.status === "running";
     if (isRunning) {
       setSummaryDialogOpen(true);
@@ -512,6 +503,39 @@ export default function CommonDashboard() {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      loadTinOptions(tinInputValue.trim());
+    }, 300);
+
+    return () => window.clearTimeout(timerId);
+  }, [loadTinOptions, tinInputValue]);
+
+  const hasValidDateRange = Boolean(
+    startDate?.isValid?.() &&
+      endDate?.isValid?.() &&
+      !startDate.isAfter(endDate, "day")
+  );
+
+  const handleSubmit = () => {
+    if (isSubmitting || !hasValidDateRange) {
+      return;
+    }
+
+    if (!selectedTin?.tin) {
+      Swal.fire({ icon: "warning", text: "Please select TIN" });
+      return;
+    }
+
+    const nextFilters = { startDate, endDate, selectedTin };
+    setIsSubmitting(true);
+    setAppliedFilters(nextFilters);
+    Promise.all([
+      reloadDashboard(buildParams(nextFilters)),
+      loadTinOptions(tinInputValue.trim()),
+    ]).finally(() => setIsSubmitting(false));
+  };
 
   //SSO TOKEN HANDLING
   // useEffect(() => {
@@ -553,8 +577,8 @@ export default function CommonDashboard() {
   const fraudTrendColumns = useMemo(() => [{ name: "Year", selector: (row) => row.year, sortable: true }, { name: "Fraud Cases", selector: (row) => num(row?.fraud_cases ?? row?.fraudCases ?? row?.count), sortable: true, right: true }], []);
   const riskExposureColumns = useMemo(() => [{ name: "Risk Status", selector: (row) => row?.predicted_fraud ?? "Unknown", sortable: true }, { name: "Taxpayers", selector: (row) => num(row?.taxpayers), sortable: true, right: true }], []);
   const hasOverviewData = useMemo(
-    () => [turnover, profit, tax, etr].some((value) => value !== 0),
-    [etr, profit, tax, turnover]
+    () => Object.keys(overview).length > 0,
+    [overview]
   );
 
   /* ================= CHART OPTIONS ================= */
@@ -842,7 +866,12 @@ export default function CommonDashboard() {
                             format="DD/MM/YYYY"
                             value={startDate}
                             onChange={(newValue) => {
-                              if (!newValue || !newValue.isValid()) return;
+                              if (newValue && !newValue.isValid()) return;
+
+                              if (!newValue) {
+                                setStartDate(null);
+                                return;
+                              }
 
                               const year = newValue.year();
                               if (year < 1900 || year > 2100) return;
@@ -867,7 +896,12 @@ export default function CommonDashboard() {
                             format="DD/MM/YYYY"
                             value={endDate}
                             onChange={(newValue) => {
-                              if (!newValue || !newValue.isValid()) return;
+                              if (newValue && !newValue.isValid()) return;
+
+                              if (!newValue) {
+                                setEndDate(null);
+                                return;
+                              }
 
                               const year = newValue.year();
                               if (year < 1900 || year > 2100) return;
@@ -908,8 +942,8 @@ export default function CommonDashboard() {
                           <Button
                             size="small"
                             variant="contained"
-                            disabled={overviewLoading || (startDate.valueOf() === appliedFilters.startDate.valueOf() && endDate.valueOf() === appliedFilters.endDate.valueOf() && selectedTin?.tin === appliedFilters.selectedTin?.tin)}
-                            onClick={() => setAppliedFilters({ startDate, endDate, selectedTin })}
+                            disabled={isSubmitting || !hasValidDateRange}
+                            onClick={handleSubmit}
                           >
                             Submit
                           </Button>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -37,10 +37,11 @@ export default function Compliance() {
   const [startDate, setStartDate] = useState(dayjs().subtract(2, "month").startOf("month"));
   const [endDate, setEndDate] = useState(dayjs());
   const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "3M", startDate: dayjs().subtract(2, "month").startOf("month"), endDate: dayjs() }));
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [chartView, setChartView] = useState({ filing: false, timeliness: false, profitability: false });
   const [searchText, setSearchText] = useState("");
   const [selectedIndustry, setSelectedIndustry] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   // State for different chart data
   const [taxFilingData, setTaxFilingData] = useState([]);
@@ -64,15 +65,15 @@ export default function Compliance() {
 
   const BASE_PATH = "/compliance";
 
-  const getParams = () => {
+  const getParams = (filters = appliedFilters) => {
     const params = {
-      taxtype: appliedFilters.taxType,
-      range_type: appliedFilters.tenure.toUpperCase(),
+      taxtype: filters.taxType,
+      range_type: filters.tenure.toUpperCase(),
     };
 
-    if (appliedFilters.tenure === "custom" && appliedFilters.startDate && appliedFilters.endDate) {
-      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
-      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
+    if (filters.tenure === "custom" && filters.startDate && filters.endDate) {
+      params.start_date = filters.startDate.format("YYYY-MM-DD");
+      params.end_date = filters.endDate.format("YYYY-MM-DD");
     }
     return params;
   };
@@ -110,6 +111,25 @@ export default function Compliance() {
 
     setStartDate(start);
     setEndDate(end);
+  };
+
+  const hasValidCustomDateRange =
+    tenure !== "custom" ||
+    Boolean(
+      startDate?.isValid?.() &&
+        endDate?.isValid?.() &&
+        !startDate.isAfter(endDate, "day")
+    );
+
+  const handleSubmit = () => {
+    if (isSubmitting || !hasValidCustomDateRange) {
+      return;
+    }
+
+    const nextFilters = { taxType, tenure, startDate, endDate };
+    setIsSubmitting(true);
+    setAppliedFilters(nextFilters);
+    fetchComplianceData(nextFilters).finally(() => setIsSubmitting(false));
   };
 
   // Calculate KPIs from available data
@@ -157,10 +177,10 @@ export default function Compliance() {
   };
 
   // Fetch all compliance data
-  const fetchComplianceData = async () => {
+  const fetchComplianceData = async (filters = appliedFilters) => {
     setLoading(true);
     try {
-      const params = getParams();
+      const params = getParams(filters);
       
       const [
         taxFilingRes,
@@ -217,10 +237,6 @@ export default function Compliance() {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchComplianceData();
-  }, [appliedFilters]);
 
   // Prepare chart configurations
   const taxFilingOptions = {
@@ -606,7 +622,7 @@ export default function Compliance() {
                         format="DD/MM/YYYY"
                         value={startDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
                           setStartDate(newValue);
                         }}
                         slotProps={{
@@ -618,7 +634,7 @@ export default function Compliance() {
                         format="DD/MM/YYYY"
                         value={endDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
                           setEndDate(newValue);
                         }}
                         slotProps={{
@@ -633,7 +649,7 @@ export default function Compliance() {
                       <span>{endDate.format("DD-MM-YYYY")}</span>
                     </div>
                   )}
-                  <Button size="small" variant="contained" disabled={loading} onClick={() => setAppliedFilters({ taxType, tenure, startDate, endDate })}>Submit</Button>
+                  <Button size="small" variant="contained" disabled={isSubmitting || loading || !hasValidCustomDateRange} onClick={handleSubmit}>Submit</Button>
                 </div>
               </div>
 

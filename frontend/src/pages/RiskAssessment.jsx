@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -86,12 +86,13 @@ export default function RiskAssessment() {
   const [startDate, setStartDate] = useState(dayjs().startOf("month"));
   const [endDate, setEndDate] = useState(dayjs().endOf("month"));
   const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "1M", startDate: dayjs().startOf("month"), endDate: dayjs().endOf("month"), anomalyYear: "", anomalyMonth: "" }));
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [chartView, setChartView] = useState({ category: false, industry: false, taxpayer: false, anomaly: false });
 
   const [industryChart, setIndustryChart] = useState({ labels: [], data: [] });
-  const [industryLoading, setIndustryLoading] = useState(true);
-  const [riskDataLoading, setRiskDataLoading] = useState(true);
-  const [anomalyLoading, setAnomalyLoading] = useState(true);
+  const [industryLoading, setIndustryLoading] = useState(false);
+  const [riskDataLoading, setRiskDataLoading] = useState(false);
+  const [anomalyLoading, setAnomalyLoading] = useState(false);
   const [selectedSector, setSelectedSector] = useState("");
   const [searchText, setSearchText] = useState("");
 
@@ -125,28 +126,28 @@ export default function RiskAssessment() {
       ? "/risk-assessment"
       : "/risk-assessment";
 
-  const getParams = () => {
+  const getParams = (filters = appliedFilters) => {
     const params = {
-      taxtype: appliedFilters.taxType,
-      range_type: appliedFilters.tenure.toUpperCase(),
+      taxtype: filters.taxType,
+      range_type: filters.tenure.toUpperCase(),
     };
 
-    if (appliedFilters.tenure === "custom" && appliedFilters.startDate && appliedFilters.endDate) {
-      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
-      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
+    if (filters.tenure === "custom" && filters.startDate && filters.endDate) {
+      params.start_date = filters.startDate.format("YYYY-MM-DD");
+      params.end_date = filters.endDate.format("YYYY-MM-DD");
     }
     return params;
   };
 
-  const getAnomalyParams = () => {
-    const params = getParams();
+  const getAnomalyParams = (filters = appliedFilters) => {
+    const params = getParams(filters);
 
-    if (appliedFilters.anomalyYear) {
-      params.year = appliedFilters.anomalyYear;
+    if (filters.anomalyYear) {
+      params.year = filters.anomalyYear;
     }
 
-    if (appliedFilters.taxType !== "cit" && appliedFilters.anomalyMonth) {
-      params.month = appliedFilters.anomalyMonth;
+    if (filters.taxType !== "cit" && filters.anomalyMonth) {
+      params.month = filters.anomalyMonth;
     }
 
     return params;
@@ -187,11 +188,35 @@ export default function RiskAssessment() {
     setEndDate(end);
   };
 
-  const fetchIndustryChart = async () => {
+  const hasValidCustomDateRange =
+    tenure !== "custom" ||
+    Boolean(
+      startDate?.isValid?.() &&
+        endDate?.isValid?.() &&
+        !startDate.isAfter(endDate, "day")
+    );
+
+  const handleSubmit = () => {
+    if (isSubmitting || !hasValidCustomDateRange) {
+      return;
+    }
+
+    const nextFilters = { taxType, tenure, startDate, endDate, anomalyYear, anomalyMonth };
+    setIsSubmitting(true);
+    setAppliedFilters(nextFilters);
+    Promise.all([
+      fetchRiskData(nextFilters),
+      fetchIndustryChart(nextFilters),
+      fetchAnomalyChart(nextFilters),
+      fetchAnomalyFilters(nextFilters),
+    ]).finally(() => setIsSubmitting(false));
+  };
+
+  const fetchIndustryChart = async (filters = appliedFilters) => {
     try {
       setIndustryLoading(true);
       const res = await API.get(BASE_PATH + "/industry", {
-        params: getParams(),
+        params: getParams(filters),
       });
 
       const industries = res.data || [];
@@ -209,10 +234,10 @@ export default function RiskAssessment() {
     }
   };
 
-  const fetchRiskData = async () => {
+  const fetchRiskData = async (filters = appliedFilters) => {
     try {
       setRiskDataLoading(true);
-      const params = getParams();
+      const params = getParams(filters);
       const [categoryRes, taxpayerRes, topFraudRes] =
         await Promise.all([
           API.get(BASE_PATH + "/category", { params }),
@@ -243,11 +268,11 @@ export default function RiskAssessment() {
     }
   };
 
-  const fetchAnomalyChart = async () => {
+  const fetchAnomalyChart = async (filters = appliedFilters) => {
     try {
       setAnomalyLoading(true);
       const res = await API.get(BASE_PATH + "/frequency-anomalies", {
-        params: getAnomalyParams(),
+        params: getAnomalyParams(filters),
       });
       const anom = res?.data || {};
       setAnomalyChart({
@@ -266,10 +291,10 @@ export default function RiskAssessment() {
     }
   };
 
-  const fetchAnomalyFilters = async () => {
+  const fetchAnomalyFilters = async (filters = appliedFilters) => {
     try {
       const res = await API.get(BASE_PATH + "/filters", {
-        params: getParams(),
+        params: getParams(filters),
       });
       const years = Array.isArray(res?.data?.years) ? res.data.years : [];
       const months = Array.isArray(res?.data?.months) ? res.data.months : [];
@@ -290,17 +315,6 @@ export default function RiskAssessment() {
       setAnomalyFilterOptions({ years: [], months: [] });
     }
   };
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchRiskData();
-      fetchIndustryChart();
-      fetchAnomalyChart();
-      fetchAnomalyFilters();
-    }, 250);
-
-    return () => clearTimeout(timer);
-  }, [appliedFilters]);
 
   const categoryOptions = {
     chart: { type: "bar", toolbar: { show: false } },
@@ -458,7 +472,11 @@ export default function RiskAssessment() {
   const hasSeriesData = (series) =>
     Array.isArray(series) &&
     series.length > 0 &&
-    series.some((s) => Array.isArray(s.data) && s.data.some((v) => v > 0));
+    series.some(
+      (s) =>
+        Array.isArray(s.data) &&
+        s.data.some((value) => value !== null && value !== undefined)
+    );
 
   const categorySeries = [
     { name: "Total Records", data: categoryChart.total_series },
@@ -764,7 +782,12 @@ export default function RiskAssessment() {
                         format="DD/MM/YYYY"
                         value={startDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
+
+                          if (!newValue) {
+                            setStartDate(null);
+                            return;
+                          }
 
                           const year = newValue.year();
                           if (year < 1900 || year > 2100) return;
@@ -786,7 +809,12 @@ export default function RiskAssessment() {
                         format="DD/MM/YYYY"
                         value={endDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
+
+                          if (!newValue) {
+                            setEndDate(null);
+                            return;
+                          }
 
                           const year = newValue.year();
                           if (year < 1900 || year > 2100) return;
@@ -814,8 +842,8 @@ export default function RiskAssessment() {
                   <Button
                     size="small"
                     variant="contained"
-                    disabled={industryLoading || riskDataLoading || anomalyLoading}
-                    onClick={() => setAppliedFilters({ taxType, tenure, startDate, endDate, anomalyYear, anomalyMonth })}
+                    disabled={isSubmitting || industryLoading || riskDataLoading || anomalyLoading || !hasValidCustomDateRange}
+                    onClick={handleSubmit}
                   >
                     Submit
                   </Button>
