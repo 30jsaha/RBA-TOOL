@@ -91,18 +91,19 @@ export default function TaxpayerProfile() {
     setStartDate,
     setEndDate,
   } = useTenure("3m");
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "3m", startDate: dayjs().subtract(2, "month").startOf("month"), endDate: dayjs() }));
 
   const BASE_PATH = "/predicted-records/all-tax-records";
   const HISTORY_PATH = "/predicted-records/taxpayer-history";
   const FRAUD_REASONS_PATH = "/predicted-records/fraud-reasons";
 
   const getFilterParams = () => ({
-    taxtype: taxType,
-    range_type: tenure,
-    ...(tenure === "custom" && isValidDayjs(startDate) && isValidDayjs(endDate)
+    taxtype: appliedFilters.taxType,
+    range_type: appliedFilters.tenure,
+    ...(appliedFilters.tenure === "custom" && isValidDayjs(appliedFilters.startDate) && isValidDayjs(appliedFilters.endDate)
       ? {
-          start_date: dayjs(startDate).format("YYYY-MM-DD"),
-          end_date: dayjs(endDate).format("YYYY-MM-DD"),
+          start_date: dayjs(appliedFilters.startDate).format("YYYY-MM-DD"),
+          end_date: dayjs(appliedFilters.endDate).format("YYYY-MM-DD"),
         }
       : {}),
   });
@@ -123,7 +124,7 @@ export default function TaxpayerProfile() {
   };
 
   const fetchCoreData = async () => {
-    if (tenure === "custom" && (!isValidDayjs(startDate) || !isValidDayjs(endDate))) {
+    if (appliedFilters.tenure === "custom" && (!isValidDayjs(appliedFilters.startDate) || !isValidDayjs(appliedFilters.endDate))) {
       setRiskRecords([]);
       setTotalRecords(0);
       setTotalPages(0);
@@ -246,11 +247,11 @@ export default function TaxpayerProfile() {
     setFraudReasons([]);
     setFraudReasonTin("");
     setOpenReasonDialog(false);
-  }, [taxType, tenure, startDate, endDate]);
+  }, [appliedFilters]);
 
   useEffect(() => {
     fetchCoreData();
-  }, [taxType, tenure, startDate, endDate, currentPage, searchTerm, sortBy, sortOrder]);
+  }, [appliedFilters, currentPage, searchTerm, sortBy, sortOrder]);
 
   const columns = [
     {
@@ -461,6 +462,7 @@ export default function TaxpayerProfile() {
                       <span>{formatDateForDisplay(endDate)}</span>
                     </div>
                   )}
+                  <Button size="small" variant="contained" disabled={loading || (tenure === "custom" && (!isValidDayjs(startDate) || !isValidDayjs(endDate)))} onClick={() => { setCurrentPage(1); setAppliedFilters({ taxType, tenure, startDate, endDate }); }}>Submit</Button>
                 </div>
               </div>
 

@@ -62,6 +62,7 @@ export default function TaxpayerReportRiskProfiling() {
     setStartDate,
     setEndDate,
   } = useTenure("1m");
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ tenure: "1m", startDate: dayjs().startOf("month"), endDate: dayjs().endOf("month"), taxType: "gst", selectedTin: null }));
 
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -132,16 +133,16 @@ export default function TaxpayerReportRiskProfiling() {
     try {
       const params = {
         tin: selectedTin.tin,
-        range_type: tenure,
-        taxtype: taxType,
+        range_type: appliedFilters.tenure,
+        taxtype: appliedFilters.taxType,
         debug: 1,
       };
-      if (tenure === "custom") {
+      if (appliedFilters.tenure === "custom") {
         const startOk = startDate && typeof startDate.format === "function" && startDate.isValid?.();
         const endOk = endDate && typeof endDate.format === "function" && endDate.isValid?.();
         if (startOk && endOk) {
-          params.start_date = startDate.format("YYYY-MM-DD");
-          params.end_date = endDate.format("YYYY-MM-DD");
+          params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
+          params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
         }
       }
       const res = await API.get(`${BASE_PATH}/taxpayer-summary`, { params });
@@ -243,6 +244,7 @@ export default function TaxpayerReportRiskProfiling() {
         // Auto select 1st TIN
         if (!selectedTin && formatted.length > 0) {
           setSelectedTin(formatted[0]);
+          setAppliedFilters((current) => ({ ...current, taxType, selectedTin: formatted[0] }));
         }
       })
       .catch(() => console.error("TIN list fetch error"));
@@ -250,20 +252,20 @@ export default function TaxpayerReportRiskProfiling() {
 
   // Fetch taxpayer summary
   useEffect(() => {
-    if (!selectedTin) return;
+    if (!appliedFilters.selectedTin) return;
 
     const params = {
-      tin: selectedTin.tin,
-      range_type: tenure,
-      taxtype: taxType,
+      tin: appliedFilters.selectedTin?.tin,
+      range_type: appliedFilters.tenure,
+      taxtype: appliedFilters.taxType,
     };
 
-    if (tenure === "custom") {
-      const startOk = startDate && typeof startDate.format === "function" && startDate.isValid?.();
-      const endOk = endDate && typeof endDate.format === "function" && endDate.isValid?.();
+    if (appliedFilters.tenure === "custom") {
+      const startOk = appliedFilters.startDate && typeof appliedFilters.startDate.format === "function" && appliedFilters.startDate.isValid?.();
+      const endOk = appliedFilters.endDate && typeof appliedFilters.endDate.format === "function" && appliedFilters.endDate.isValid?.();
       if (!startOk || !endOk) return;
-      params.start_date = startDate.format("YYYY-MM-DD");
-      params.end_date = endDate.format("YYYY-MM-DD");
+      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
+      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
     }
 
     setLoading(true);
@@ -272,7 +274,7 @@ export default function TaxpayerReportRiskProfiling() {
       .then((res) => setSummary(res.data))
       .catch(() => console.error("Summary fetch error"))
       .finally(() => setLoading(false));
-  }, [selectedTin, tenure, startDate, endDate, taxType]);
+  }, [appliedFilters]);
 
   return (
     <div className="container-fluid">
@@ -432,6 +434,14 @@ export default function TaxpayerReportRiskProfiling() {
                           <span>{formatDateForDisplay(endDate)}</span>
                         </div>
                       )}
+                      <Button
+                        size="small"
+                        variant="contained"
+                        disabled={loading || (tenure === "custom" && (!isValidDayjs(startDate) || !isValidDayjs(endDate))) || !selectedTin}
+                        onClick={() => setAppliedFilters({ taxType, tenure, startDate, endDate, selectedTin })}
+                      >
+                        Submit
+                      </Button>
                     </div>
                   </div>
                 </div>
