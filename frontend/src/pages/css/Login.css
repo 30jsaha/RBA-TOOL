@@ -12,6 +12,7 @@ html, body {
 .login-page {
   min-height: 100vh;
   width: 100vw;
+  background-color: #d9ecfb;
   background-repeat: no-repeat;
   background-position: center;
   background-size: cover;

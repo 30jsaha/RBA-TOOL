@@ -5,7 +5,7 @@ import { useAuth } from "../context/useAuth";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import "./css/Login.css";
 import Logo from "../assets/img/logo.png";
-import LoginBgNew from "../assets/img/login-bg-new-v2.jpg";
+import LoginBgNew from "../assets/img/login-bg-new-v2-optimized.jpg";
 
 export default function Login() {
   const navigate = useNavigate();
