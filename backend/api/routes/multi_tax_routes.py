@@ -312,7 +312,7 @@ def _ensure_aggregate_tin_year_unique_indexes(conn):
     for table_name in ('agg_cit', 'agg_gst', 'agg_swt'):
         index_name = f"uq_{table_name}_tin_year"
         existing = conn.execute(text(
-            "SELECT non_unique, GROUP_CONCAT(column_name ORDER BY seq_in_index) "
+            "SELECT MIN(non_unique), GROUP_CONCAT(column_name ORDER BY seq_in_index) "
             "FROM information_schema.statistics "
             "WHERE table_schema = DATABASE() AND table_name = :table_name "
             "AND index_name = :index_name GROUP BY index_name"
