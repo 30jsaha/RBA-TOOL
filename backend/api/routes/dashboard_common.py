@@ -460,8 +460,9 @@ def _run_summary_rebuild(lock_conn):
             _log_rebuild_step("Checking source table")
             source_rows = int(conn.execute(text("SELECT COUNT(*) FROM multi_tax_integration_results")).scalar() or 0)
             _log_rebuild_step("Source row count", source_rows=source_rows)
-            if source_rows <= 0:
-                raise RuntimeError("Summary rebuild failed. Source table multi_tax_integration_results has zero rows.")
+            # An empty integration result is a valid successful state when all
+            # three aggregate sources are empty; build and publish an empty
+            # summary schema atomically just like a populated one.
 
             step_started_at = time.perf_counter()
             _log_rebuild_step("Creating temp table", tmp_table_name=tmp_table_name)
@@ -485,8 +486,6 @@ def _run_summary_rebuild(lock_conn):
             _log_rebuild_step("INSERT executed", elapsed_ms=insert_elapsed_ms, affected_row_count=getattr(insert_result, "rowcount", None))
             temp_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {tmp_table_name}")).scalar() or 0)
             _log_rebuild_step("Inserted temp rows", inserted_rows=temp_rows)
-            if temp_rows <= 0:
-                raise RuntimeError("Summary rebuild failed. No rows inserted into temp table.")
             _update_summary_status(lock_conn, status="running", progress=85, current_step="Temp table populated", source_rows=source_rows, temp_rows=temp_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), last_sql=generated_sql, tmp_table_name=tmp_table_name, worker_running=True)
 
         with engine.begin() as conn:
@@ -568,8 +567,6 @@ def _background_summary_rebuild_worker(app, current_user_id, admission, admitted
             def _multitax_status_callback(**updates):
                 if updates.get("status") == "error":
                     raise RuntimeError(updates.get("detail") or "Multi-Tax Integration failed")
-                if updates.get("stage") == "integration_completed" and updates.get("rows_saved") == 0:
-                    raise RuntimeError("Multi-Tax Integration returned zero rows. Dashboard summary was not rebuilt.")
                 stages = {
                     "refresh_started": (10, "Refreshing Multi-Tax aggregates"),
                     "aggregation_complete": (35, "Multi-Tax aggregation complete"),

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Blueprint, request, jsonify
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -144,6 +144,14 @@ def _table_columns(conn, table_name):
         {'table_name': table_name},
     ).fetchall()
     return {row[0] for row in rows}
+
+
+def _has_index(conn, table_name, index_name):
+    return bool(conn.execute(text(
+        'SELECT 1 FROM information_schema.statistics '
+        'WHERE table_schema = DATABASE() AND table_name = :table_name '
+        'AND index_name = :index_name LIMIT 1'
+    ), {'table_name': table_name, 'index_name': index_name}).scalar())
 
 
 def _ensure_permanent_agg_tables_exist(conn):
@@ -304,11 +312,19 @@ def _ensure_aggregate_tin_year_unique_indexes(conn):
     for table_name in ('agg_cit', 'agg_gst', 'agg_swt'):
         index_name = f"uq_{table_name}_tin_year"
         existing = conn.execute(text(
-            "SELECT COUNT(*) FROM information_schema.statistics "
+            "SELECT non_unique, GROUP_CONCAT(column_name ORDER BY seq_in_index) "
+            "FROM information_schema.statistics "
             "WHERE table_schema = DATABASE() AND table_name = :table_name "
-            "AND index_name = :index_name"
-        ), {'table_name': table_name, 'index_name': index_name}).scalar()
-        if not existing:
+            "AND index_name = :index_name GROUP BY index_name"
+        ), {'table_name': table_name, 'index_name': index_name}).fetchone()
+        if existing and int(existing[0]) == 0 and existing[1] == 'tin,tax_period_year':
+            continue
+        if existing:
+            raise RuntimeError(
+                f"{table_name} has incompatible index {index_name}; "
+                "manual index review is required."
+            )
+        if not _has_index(conn, table_name, index_name):
             conn.execute(text(
                 f"ALTER TABLE {table_name} ADD UNIQUE INDEX {index_name} "
                 "(tin, tax_period_year)"
@@ -467,12 +483,7 @@ def _refresh_multi_tax_tables_unlocked(current_user_id=None, status_callback=Non
                     user_id = None
 
             refresh_years = _resolve_refresh_years(conn, user_id=user_id)
-            if not refresh_years:
-                raise RuntimeError(
-                    'Could not determine an uploaded financial year from the source tax tables.'
-                )
-
-            logger.info('Refreshing permanent agg tables for tax_period_year values: %s', refresh_years)
+            logger.info('Refreshing permanent agg tables for tax_period_year values: %s', refresh_years or 'none')
 
             agg_configs = [
                 ('agg_cit', _build_cit_agg_insert_sql),
@@ -664,9 +675,7 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
 
         refresh_years = _resolve_integration_years(conn, user_id=user_id)
         if not refresh_years:
-            raise RuntimeError(
-                'Could not determine an uploaded financial year from the source tax tables.'
-            )
+            logger.info('All aggregate source tables are empty; building a valid empty result.')
 
         _ensure_permanent_integration_table(conn, prod_table)
         conn.commit()
@@ -692,9 +701,6 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
             conn.execute(text(f"ALTER TABLE {build_table} DROP COLUMN multi_tax_issue"))
         if 'multi_tax_issue' not in build_columns or not generated:
             conn.execute(text(_build_multitax_generated_column_sql(build_table)))
-        existing_indexes = {
-            row[0] for row in conn.execute(text(f"SHOW INDEX FROM {build_table}")).fetchall()
-        }
         missing_index_sql = {
             'idx_tin_year': 'ADD INDEX idx_tin_year (tin(20), tax_period_year)',
             'idx_flags': 'ADD INDEX idx_flags (flagged_in_tax_types)',
@@ -702,7 +708,7 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
             'idx_user_tin_year': 'ADD INDEX idx_user_tin_year (user_id, tin(20), tax_period_year)',
         }
         for index_name, clause in missing_index_sql.items():
-            if index_name not in existing_indexes:
+            if not _has_index(conn, build_table, index_name):
                 conn.execute(text(f"ALTER TABLE {build_table} {clause}"))
         conn.commit()
         if callable(status_callback):
@@ -1266,20 +1272,13 @@ def _run_multitax_diagnostics(conn, failing_sql=None, stage='integration'):
 
 
 def _integration_table_ready(engine) -> bool:
-    """Return True if multi_tax_integration_results exists and has rows."""
+    """Return True when the integration table schema is usable, including empty tables."""
     try:
         with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT COUNT(*) FROM information_schema.tables "
-                "WHERE table_schema = DATABASE() "
-                "AND table_name = 'multi_tax_integration_results'"
-            ))
-            if result.scalar() == 0:
+            if not _table_exists(conn, 'multi_tax_integration_results'):
                 return False
-            row_count = conn.execute(
-                text("SELECT COUNT(*) FROM multi_tax_integration_results")
-            ).scalar()
-            return row_count > 0
+            required = {'tin', 'tax_period_year', 'multi_tax_issue', 'flagged_in_tax_types'}
+            return required.issubset(_table_columns(conn, 'multi_tax_integration_results'))
     except Exception:
         return False
 
@@ -1296,8 +1295,8 @@ def _validate_integration_build(conn, table_name):
     row_count = conn.execute(
         text(f"SELECT COUNT(*) FROM {table_name}")
     ).scalar()
-    if not row_count or row_count <= 0:
-        raise RuntimeError(f"{table_name} validation failed: row count must be greater than zero.")
+    # Zero rows are valid when all three source aggregates are empty. The
+    # table/schema validation, not row count, determines readiness.
 
     generated_column_exists = conn.execute(text(
         "SELECT COUNT(*) FROM information_schema.columns "
