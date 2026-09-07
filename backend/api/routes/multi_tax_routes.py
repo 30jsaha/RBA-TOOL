@@ -220,13 +220,47 @@ def _resolve_latest_uploaded_years(conn, table_name, user_id=None):
 
 
 def _resolve_refresh_years(conn, user_id=None):
+    """Return every processed source year so stale duplicate aggregates heal."""
     years = set()
     for source_table in (
         'cit_fraud_justification',
         'gst_fraud_justification',
         'swt_fraud_justification',
     ):
-        years.update(_resolve_latest_uploaded_years(conn, source_table, user_id=user_id))
+        columns = _table_columns(conn, source_table)
+        filters = ['tax_period_year IS NOT NULL']
+        params = {}
+        if user_id is not None and 'user_id' in columns:
+            filters.append('user_id = :user_id')
+            params['user_id'] = user_id
+        rows = conn.execute(text(
+            f"SELECT DISTINCT tax_period_year FROM {source_table} "
+            f"WHERE {' AND '.join(filters)}"
+        ), params).fetchall()
+        years.update(int(row[0]) for row in rows if row[0] is not None)
+    return sorted(years)
+
+
+def _resolve_integration_years(conn, user_id=None):
+    """Return years present in the permanent aggregate tables.
+
+    Integration is intentionally independent of upload/justification tables;
+    those tables belong to the individual tax pipelines and are not required
+    once their aggregate output has been built.
+    """
+    years = set()
+    for table_name in ('agg_cit', 'agg_gst', 'agg_swt'):
+        columns = _table_columns(conn, table_name)
+        filters = ['tax_period_year IS NOT NULL']
+        params = {}
+        if user_id is not None and 'user_id' in columns:
+            filters.append('user_id = :user_id')
+            params['user_id'] = user_id
+        rows = conn.execute(text(
+            f"SELECT DISTINCT tax_period_year FROM {table_name} "
+            f"WHERE {' AND '.join(filters)}"
+        ), params).fetchall()
+        years.update(int(row[0]) for row in rows if row[0] is not None)
     return sorted(years)
 
 
@@ -247,6 +281,40 @@ def _agg_table_has_year_user_unique_key(conn, table_name):
     return bool(row)
 
 
+def _duplicate_aggregate_key_samples(conn, table_name, limit=5):
+    return [dict(row._mapping) for row in conn.execute(text(
+        f"SELECT tin, tax_period_year, COUNT(*) AS row_count FROM {table_name} "
+        "GROUP BY tin, tax_period_year HAVING COUNT(*) > 1 "
+        "ORDER BY row_count DESC, tin, tax_period_year LIMIT :limit"
+    ), {'limit': int(limit)}).fetchall()]
+
+
+def _validate_aggregate_grain(conn):
+    """Fail closed before integration if any source violates TIN/year grain."""
+    for table_name in ('agg_cit', 'agg_gst', 'agg_swt'):
+        samples = _duplicate_aggregate_key_samples(conn, table_name)
+        if samples:
+            raise RuntimeError(
+                f"{table_name} contains duplicate TIN/year keys: {samples}"
+            )
+
+
+def _ensure_aggregate_tin_year_unique_indexes(conn):
+    """Persist the validated grain without hiding existing duplicate records."""
+    for table_name in ('agg_cit', 'agg_gst', 'agg_swt'):
+        index_name = f"uq_{table_name}_tin_year"
+        existing = conn.execute(text(
+            "SELECT COUNT(*) FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() AND table_name = :table_name "
+            "AND index_name = :index_name"
+        ), {'table_name': table_name, 'index_name': index_name}).scalar()
+        if not existing:
+            conn.execute(text(
+                f"ALTER TABLE {table_name} ADD UNIQUE INDEX {index_name} "
+                "(tin, tax_period_year)"
+            ))
+
+
 def _build_cit_agg_insert_sql(table_name, use_upsert=False):
     sql = f"""
         INSERT INTO {table_name} (
@@ -257,26 +325,25 @@ def _build_cit_agg_insert_sql(table_name, use_upsert=False):
         )
         SELECT
             CAST(tin AS CHAR(20)) AS tin,
-            taxpayer AS taxpayer_name,
-            tax_account_no AS tax_account_number,
-            assessment_no AS assessment_number,
+            /* The integration grain is TIN/year.  Financial measures are
+               additive across assessments; descriptive fields use a stable
+               representative value while the complete totals are retained. */
+            MAX(taxpayer) AS taxpayer_name,
+            MAX(tax_account_no) AS tax_account_number,
+            MAX(assessment_no) AS assessment_number,
             tax_period_year,
-            sector_activity,
-            enterprise_activity,
-            total_gross_income AS cit_total_gross_income,
-            gross_sales_cash_or_credit AS cit_gross_sales,
-            salaries_or_wages AS cit_salaries_or_wages,
-            total_tax_payable AS cit_total_tax_payable,
-            net_tax_payable_or_refunda AS cit_net_tax_payable,
+            MAX(sector_activity) AS sector_activity,
+            MAX(enterprise_activity) AS enterprise_activity,
+            SUM(total_gross_income) AS cit_total_gross_income,
+            SUM(gross_sales_cash_or_credit) AS cit_gross_sales,
+            SUM(salaries_or_wages) AS cit_salaries_or_wages,
+            SUM(total_tax_payable) AS cit_total_tax_payable,
+            SUM(net_tax_payable_or_refunda) AS cit_net_tax_payable,
             MAX(predicted_fraud = 'Fraud') AS cit_fraud_flag,
             :user_id AS user_id
         FROM cit_fraud_justification
         WHERE tax_period_year = :tax_period_year
-        GROUP BY
-            tin, taxpayer, tax_account_no, assessment_no,
-            tax_period_year, sector_activity, enterprise_activity,
-            total_gross_income, gross_sales_cash_or_credit,
-            salaries_or_wages, total_tax_payable, net_tax_payable_or_refunda
+        GROUP BY tin, tax_period_year
     """
     if use_upsert:
         sql += """
@@ -307,10 +374,10 @@ def _build_gst_agg_insert_sql(table_name, use_upsert=False):
         )
         SELECT
             CAST(tin AS CHAR(20)) AS tin,
-            taxpayer_name,
-            taxpayer_type,
-            tax_account_number,
-            assessment_number,
+            MAX(taxpayer_name) AS taxpayer_name,
+            MAX(taxpayer_type) AS taxpayer_type,
+            MAX(tax_account_number) AS tax_account_number,
+            MAX(assessment_number) AS assessment_number,
             tax_period_year,
             SUM(total_sales_income) AS gst_total_sales_income,
             SUM(gst_taxable_sales) AS gst_taxable_sales,
@@ -322,9 +389,7 @@ def _build_gst_agg_insert_sql(table_name, use_upsert=False):
             :user_id AS user_id
         FROM gst_fraud_justification
         WHERE tax_period_year = :tax_period_year
-        GROUP BY
-            tin, taxpayer_name, taxpayer_type,
-            tax_account_number, assessment_number, tax_period_year
+        GROUP BY tin, tax_period_year
     """
     if use_upsert:
         sql += """
@@ -355,9 +420,9 @@ def _build_swt_agg_insert_sql(table_name, use_upsert=False):
         )
         SELECT
             CAST(tin AS CHAR(20)) AS tin,
-            taxpayer_name,
-            tax_account_number,
-            assessment_number,
+            MAX(taxpayer_name) AS taxpayer_name,
+            MAX(tax_account_number) AS tax_account_number,
+            MAX(assessment_number) AS assessment_number,
             tax_period_year,
             SUM(total_salary_wages_paid) AS swt_total_salary_wages_paid,
             SUM(total_swt_tax_deducted) AS swt_total_tax_deducted,
@@ -367,9 +432,7 @@ def _build_swt_agg_insert_sql(table_name, use_upsert=False):
             :user_id AS user_id
         FROM swt_fraud_justification
         WHERE tax_period_year = :tax_period_year
-        GROUP BY
-            tin, taxpayer_name, tax_account_number,
-            assessment_number, tax_period_year
+        GROUP BY tin, tax_period_year
     """
     if use_upsert:
         sql += """
@@ -454,6 +517,9 @@ def _refresh_multi_tax_tables_unlocked(current_user_id=None, status_callback=Non
                     message='[REFRESH] Aggregation complete',
                 )
 
+            _validate_aggregate_grain(conn)
+            _ensure_aggregate_tin_year_unique_indexes(conn)
+            conn.commit()
             _log_multitax_counts(conn, 'REFRESH Aggregation complete')
         logger.info('Multi-tax agg table refresh complete.')
     except Exception as e:
@@ -491,7 +557,11 @@ def _refresh_multi_tax_tables_unlocked(current_user_id=None, status_callback=Non
 
 
 def refresh_multi_tax_tables(current_user_id=None, status_callback=None):
-    """Refresh derived data without racing a reset or a source-table insert."""
+    """Rebuild aggregate projections from processed data, then integrate.
+
+    This does not rerun prediction or modify raw financial tables.  It rebuilds
+    only the permanent aggregate projections at their required TIN/year grain.
+    """
     lock_engine = get_mysql_engine()
     try:
         with financial_data_lock(lock_engine, timeout_seconds=30):
@@ -503,9 +573,15 @@ def refresh_multi_tax_tables(current_user_id=None, status_callback=None):
         lock_engine.dispose()
 
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(refresh_multi_tax_tables, 'cron', hour=1, minute=0)
-if not scheduler.running:
+# Gunicorn imports this module once per worker.  Starting APScheduler at
+# import-time therefore creates one scheduler per worker.  Scheduled refresh
+# is opt-in for a dedicated process/cron invocation; manual refresh remains
+# available through the API in every deployment.
+scheduler = None
+if os.getenv('RBA_ENABLE_MULTITAX_SCHEDULER', '').lower() in {'1', 'true', 'yes'}:
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(refresh_multi_tax_tables, 'cron', hour=1, minute=0,
+                      id='multitax_daily_refresh', replace_existing=True)
     scheduler.start()
 
 
@@ -540,8 +616,11 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
     engine = get_mysql_engine()
     lock_name = "multi_tax_integration_lock"
     prod_table = "multi_tax_integration_results"
+    build_table = "multi_tax_integration_results_build"
+    old_table = "multi_tax_integration_results_old"
     lock_acquired = False
     conn = None
+    insert_sql = None
     try:
         conn = engine.connect()
         python_thread_id = threading.get_ident()
@@ -583,7 +662,7 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
             except Exception:
                 user_id = None
 
-        refresh_years = _resolve_refresh_years(conn, user_id=user_id)
+        refresh_years = _resolve_integration_years(conn, user_id=user_id)
         if not refresh_years:
             raise RuntimeError(
                 'Could not determine an uploaded financial year from the source tax tables.'
@@ -592,31 +671,84 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
         _ensure_permanent_integration_table(conn, prod_table)
         conn.commit()
 
-        delete_sql = text(
-            f"DELETE FROM {prod_table} WHERE tax_period_year IN :refresh_years"
-        ).bindparams(bindparam('refresh_years', expanding=True))
-        insert_sql = _build_multitax_insert_sql(
-            prod_table,
-            year_filter=True,
-            user_id_as_param=True,
-        )
+        # A duplicate source key would multiply rows in the joins. Never
+        # deduplicate financial records at integration time; fail before the
+        # staging table can replace production data.
+        _validate_aggregate_grain(conn)
 
-        try:
-            conn.execute(delete_sql, {'refresh_years': [int(year) for year in refresh_years]})
-            rows_inserted = 0
-            for tax_year in refresh_years:
-                rows_inserted += int(
-                    conn.execute(
-                        text(insert_sql),
-                        {'tax_period_year': int(tax_year), 'user_id': user_id},
-                    ).rowcount or 0
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            logger.error("Integration insert failed; starting diagnostic stages.")
-            _run_multitax_diagnostics(conn)
-            raise
+        # LIKE preserves the production schema, generated column, and indexes.
+        # Only the build table is discarded/reused; production is untouched
+        # until the final atomic RENAME TABLE.
+        conn.execute(text(f"DROP TABLE IF EXISTS {build_table}"))
+        conn.execute(text(f"CREATE TABLE {build_table} LIKE {prod_table}"))
+        build_columns = _table_columns(conn, build_table)
+        generated = conn.execute(text(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = :table_name "
+            "AND column_name = 'multi_tax_issue' "
+            "AND generation_expression IS NOT NULL"
+        ), {'table_name': build_table}).scalar()
+        if 'multi_tax_issue' in build_columns and not generated:
+            conn.execute(text(f"ALTER TABLE {build_table} DROP COLUMN multi_tax_issue"))
+        if 'multi_tax_issue' not in build_columns or not generated:
+            conn.execute(text(_build_multitax_generated_column_sql(build_table)))
+        existing_indexes = {
+            row[0] for row in conn.execute(text(f"SHOW INDEX FROM {build_table}")).fetchall()
+        }
+        missing_index_sql = {
+            'idx_tin_year': 'ADD INDEX idx_tin_year (tin(20), tax_period_year)',
+            'idx_flags': 'ADD INDEX idx_flags (flagged_in_tax_types)',
+            'idx_user_year_tin': 'ADD INDEX idx_user_year_tin (user_id, tax_period_year, tin(20))',
+            'idx_user_tin_year': 'ADD INDEX idx_user_tin_year (user_id, tin(20), tax_period_year)',
+        }
+        for index_name, clause in missing_index_sql.items():
+            if index_name not in existing_indexes:
+                conn.execute(text(f"ALTER TABLE {build_table} {clause}"))
+        conn.commit()
+        if callable(status_callback):
+            status_callback(status='running', stage='integration_building',
+                            message='[REFRESH] Building integration staging table')
+
+        insert_sql = _build_multitax_insert_sql(build_table, year_filter=False,
+                                                user_id_as_param=True,
+                                                refresh_years=refresh_years)
+        rows_inserted = int(conn.execute(text(insert_sql), {'user_id': user_id}).rowcount or 0)
+        conn.commit()
+
+        if callable(status_callback):
+            status_callback(status='running', stage='integration_validating',
+                            message='[REFRESH] Validating integration staging table')
+        _validate_integration_build(conn, build_table)
+        expected_key_count = int(conn.execute(text("""
+            SELECT COUNT(*) FROM (
+                SELECT tin, tax_period_year FROM agg_cit
+                UNION
+                SELECT tin, tax_period_year FROM agg_gst
+                UNION
+                SELECT tin, tax_period_year FROM agg_swt
+            ) source_keys
+        """)).scalar() or 0)
+        build_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {build_table}")).scalar() or 0)
+        duplicate_build_keys = _duplicate_aggregate_key_samples(conn, build_table)
+        if duplicate_build_keys:
+            raise RuntimeError(
+                f"{build_table} contains duplicate TIN/year keys: {duplicate_build_keys}"
+            )
+        if build_rows != expected_key_count:
+            raise RuntimeError(
+                f"{build_table} row count {build_rows} does not match "
+                f"the {expected_key_count} source TIN/year keys."
+            )
+
+        if callable(status_callback):
+            status_callback(status='running', stage='swapping',
+                            message='[REFRESH] Swapping integration result')
+        conn.execute(text(f"DROP TABLE IF EXISTS {old_table}"))
+        conn.execute(text(f"RENAME TABLE {prod_table} TO {old_table}, "
+                          f"{build_table} TO {prod_table}"))
+        conn.commit()
+        conn.execute(text(f"DROP TABLE IF EXISTS {old_table}"))
+        conn.commit()
 
         logger.info(
             'Production integration table refreshed for tax_period_year values: %s rows_inserted=%s',
@@ -640,6 +772,18 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
 
     except Exception as e:
         logger.exception(f"Integration failed: {e}")
+        if conn is not None:
+            try:
+                _run_multitax_diagnostics(conn, failing_sql=insert_sql,
+                                          stage='integration')
+            except Exception:
+                logger.exception('Lightweight Multi-Tax diagnostics failed.')
+            try:
+                conn.rollback()
+                conn.execute(text(f"DROP TABLE IF EXISTS {build_table}"))
+                conn.commit()
+            except Exception:
+                logger.exception('Failed to clean integration staging table.')
         if callable(status_callback):
             detail = str(e)
             counts = None
@@ -659,13 +803,18 @@ def run_multi_tax_integration(current_user_id=None, status_callback=None):
     finally:
         try:
             if lock_acquired and conn is not None:
-                conn.execute(
+                released = conn.execute(
                     text("SELECT RELEASE_LOCK(:lock_name)"),
                     {"lock_name": lock_name},
-                )
-                logger.info("Named lock released.")
+                ).scalar()
+                if str(released) != '1':
+                    conn.invalidate()
+                else:
+                    logger.info("Named lock released.")
         except Exception:
-            logger.exception("Failed to release MySQL named lock.")
+            logger.exception("Failed to release MySQL named lock; invalidating connection.")
+            if conn is not None:
+                conn.invalidate()
         finally:
             if conn is not None:
                 try:
@@ -765,7 +914,7 @@ def _build_multitax_create_table_sql(table_name):
     """
 
 
-def _build_multitax_insert_sql(table_name, year_filter=False, user_id_as_param=False):
+def _build_multitax_insert_sql_legacy(table_name, year_filter=False, user_id_as_param=False):
     year_clause = 'WHERE c.tax_period_year = :tax_period_year' if year_filter else ''
     gst_not_exists_year_clause = ' AND g.tax_period_year = :tax_period_year' if year_filter else ''
     swt_not_exists_year_clause = ' AND s.tax_period_year = :tax_period_year' if year_filter else ''
@@ -930,6 +1079,88 @@ def _build_multitax_insert_sql(table_name, year_filter=False, user_id_as_param=F
     """
 
 
+def _build_multitax_insert_sql(table_name, year_filter=False, user_id_as_param=False,
+                               refresh_years=None):
+    """Build one-row-per-TIN/year integration SQL from existing aggregates.
+
+    The source aggregates are expected to contain at most one row per key;
+    callers validate that invariant before executing this statement.  UNION
+    (not UNION ALL) creates the complete key set, after which each source is
+    joined at most once.  This removes the repeated anti-joins in the old SQL
+    and also handles GST/SWT-only combinations in one deterministic row.
+    """
+    years = sorted({int(year) for year in (refresh_years or [])})
+    year_predicate = ''
+    if years:
+        literals = ', '.join(str(year) for year in years)
+        year_predicate = f' WHERE tax_period_year IN ({literals})'
+    user_id_expr = 'CAST(:user_id AS SIGNED)' if user_id_as_param else 'CAST(NULL AS SIGNED)'
+    return f"""
+        INSERT INTO {table_name} (
+            tin, taxpayer_name, taxpayer_type, tax_account_number,
+            assessment_number, tax_period_year, sector_activity,
+            enterprise_activity, cit_gross_sales, cit_total_gross_income,
+            cit_salaries_or_wages, cit_total_tax_payable, cit_net_tax_payable,
+            gst_total_sales_income, gst_taxable_sales, gst_output_debits,
+            gst_input_credits, gst_payable, gst_refundable,
+            swt_total_salary_wages_paid, swt_total_tax_deducted,
+            swt_employees_on_payroll, swt_employees_paid_swt,
+            gst_vs_cit_sales_diff, gst_vs_cit_sales_diff_abs, gst_vs_cit_sales_pct,
+            swt_vs_cit_salary_diff, swt_vs_cit_salary_diff_abs, swt_vs_cit_salary_pct,
+            gst_validation, swt_validation, cit_fraud_flag, gst_fraud_flag,
+            swt_fraud_flag, flagged_in_tax_types, user_id
+        )
+        SELECT
+            k.tin,
+            COALESCE(c.taxpayer_name, g.taxpayer_name, s.taxpayer_name),
+            g.taxpayer_type,
+            COALESCE(c.tax_account_number, g.tax_account_number, s.tax_account_number),
+            COALESCE(c.assessment_number, g.assessment_number, s.assessment_number),
+            k.tax_period_year, c.sector_activity, c.enterprise_activity,
+            c.cit_gross_sales, c.cit_total_gross_income, c.cit_salaries_or_wages,
+            c.cit_total_tax_payable, c.cit_net_tax_payable,
+            g.gst_total_sales_income, g.gst_taxable_sales, g.gst_output_debits,
+            g.gst_input_credits, g.gst_payable, g.gst_refundable,
+            s.swt_total_salary_wages_paid, s.swt_total_tax_deducted,
+            s.swt_employees_on_payroll, s.swt_employees_paid_swt,
+            g.gst_total_sales_income - c.cit_gross_sales,
+            ABS(g.gst_total_sales_income - c.cit_gross_sales),
+            ABS(g.gst_total_sales_income - c.cit_gross_sales) /
+                NULLIF(ABS(c.cit_gross_sales), 0) * 100,
+            s.swt_total_salary_wages_paid - c.cit_salaries_or_wages,
+            ABS(s.swt_total_salary_wages_paid - c.cit_salaries_or_wages),
+            ABS(s.swt_total_salary_wages_paid - c.cit_salaries_or_wages) /
+                NULLIF(ABS(c.cit_salaries_or_wages), 0) * 100,
+            CASE
+                WHEN c.tin IS NULL THEN 'No CIT Record'
+                WHEN g.gst_total_sales_income IS NULL THEN 'No GST Record'
+                WHEN ABS(g.gst_total_sales_income - c.cit_gross_sales) > 10 THEN 'Sales Mismatch'
+                ELSE 'Valid'
+            END,
+            CASE
+                WHEN c.tin IS NULL THEN 'No SWT Record'
+                WHEN s.swt_total_salary_wages_paid IS NULL THEN 'No SWT Record'
+                WHEN ABS(s.swt_total_salary_wages_paid - c.cit_salaries_or_wages) > 5 THEN 'Salary Mismatch'
+                ELSE 'Valid'
+            END,
+            COALESCE(c.cit_fraud_flag, 0), COALESCE(g.gst_fraud_flag, 0),
+            COALESCE(s.swt_fraud_flag, 0),
+            COALESCE(c.cit_fraud_flag, 0) + COALESCE(g.gst_fraud_flag, 0) +
+                COALESCE(s.swt_fraud_flag, 0),
+            {user_id_expr}
+        FROM (
+            SELECT tin, tax_period_year FROM agg_cit{year_predicate}
+            UNION
+            SELECT tin, tax_period_year FROM agg_gst{year_predicate}
+            UNION
+            SELECT tin, tax_period_year FROM agg_swt{year_predicate}
+        ) k
+        LEFT JOIN agg_cit c ON c.tin = k.tin AND c.tax_period_year = k.tax_period_year
+        LEFT JOIN agg_gst g ON g.tin = k.tin AND g.tax_period_year = k.tax_period_year
+        LEFT JOIN agg_swt s ON s.tin = k.tin AND s.tax_period_year = k.tax_period_year
+    """
+
+
 def _build_multitax_generated_column_sql(table_name):
     return f"""
         ALTER TABLE {table_name}
@@ -955,7 +1186,7 @@ def _build_multitax_index_sql(table_name):
     )
 
 
-def _run_multitax_diagnostics(conn):
+def _run_multitax_diagnostics_legacy(conn):
     stages = [
         ("stage_1", "SELECT c.tin FROM agg_cit c LIMIT 1"),
         ("stage_2", """
@@ -1016,6 +1247,22 @@ def _run_multitax_diagnostics(conn):
                 conn.execute(text(f"DROP TABLE IF EXISTS {diag_table}"))
             except Exception:
                 logger.exception(f"Failed to drop diagnostic table {diag_table}")
+
+
+def _run_multitax_diagnostics(conn, failing_sql=None, stage='integration'):
+    """Collect bounded failure evidence; never run another large join/CTAS."""
+    details = {'stage': stage, 'connection_id': _get_connection_id(conn)}
+    try:
+        details['database_version'] = conn.execute(text('SELECT VERSION()')).scalar()
+        details['source_counts'] = _collect_multitax_counts(conn)
+        if failing_sql:
+            details['sql'] = _sql_preview(failing_sql, max_len=1000)
+            details['explain'] = [dict(row._mapping) for row in conn.execute(
+                text('EXPLAIN ' + str(failing_sql)), {'user_id': None}).fetchall()]
+    except Exception as exc:
+        details['diagnostic_error'] = f'{type(exc).__name__}: {exc}'
+    logger.error('Multi-Tax lightweight diagnostics: %s', details)
+    return details
 
 
 def _integration_table_ready(engine) -> bool:

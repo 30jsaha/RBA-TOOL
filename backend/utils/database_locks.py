@@ -23,13 +23,16 @@ def financial_data_lock(engine, *, timeout_seconds: int = 0):
     connection = engine.connect()
     acquired = False
     try:
-        acquired = connection.execute(
+        result = connection.execute(
             text("SELECT GET_LOCK(:lock_name, :timeout_seconds)"),
             {
                 "lock_name": FINANCIAL_DATA_LOCK,
                 "timeout_seconds": max(0, int(timeout_seconds)),
             },
-        ).scalar() == 1
+        ).scalar()
+        if result is None:
+            raise DatabaseMaintenanceBusy("The database could not evaluate the maintenance lock.")
+        acquired = result == 1
         if not acquired:
             raise DatabaseMaintenanceBusy(
                 "Another database reset, upload insert, or MultiTax refresh is still running. "
@@ -39,10 +42,14 @@ def financial_data_lock(engine, *, timeout_seconds: int = 0):
     finally:
         if acquired:
             try:
-                connection.execute(
+                released = connection.execute(
                     text("SELECT RELEASE_LOCK(:lock_name)"),
                     {"lock_name": FINANCIAL_DATA_LOCK},
-                )
+                ).scalar()
+                if released != 1:
+                    connection.invalidate()
             except Exception:
-                pass
+                # A failed RELEASE_LOCK may leave ownership attached to this
+                # physical session. Never return that session to the pool.
+                connection.invalidate()
         connection.close()

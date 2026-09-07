@@ -84,6 +84,13 @@ export default function CommonDashboard() {
   const [sectorData, setSectorData] = useState([]);
   const [topTins, setTopTins] = useState([]);
   const [records, setRecords] = useState([]);
+  const [recordsTotal, setRecordsTotal] = useState(0);
+  const [recordsQuery, setRecordsQuery] = useState({ filters: { range_type: "all" }, page: 1, pageSize: 50 });
+  const [recordsReload, setRecordsReload] = useState(0);
+  const [rebuildStarting, setRebuildStarting] = useState(false);
+  const rebuildStartingRef = useRef(false);
+  const statusRequestRef = useRef(false);
+  const [statusPollError, setStatusPollError] = useState("");
   const [fraudTrend, setFraudTrend] = useState([]);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [taxFlowLoading, setTaxFlowLoading] = useState(false);
@@ -209,19 +216,24 @@ export default function CommonDashboard() {
       "tax",
       "profit",
     ]), [downloadCommonCsv]);
-  const downloadConsolidatedCsv = useCallback(() =>
-    downloadCommonCsv("/common/download-csv/consolidated", "consolidated.csv", [
-      "tin",
-      "taxpayer_name",
-      "tax_period_year",
-      "total_income",
-      "profit",
-      "cit_tax",
-      "gst_diff",
-      "swt_diff",
-      "predicted_fraud",
-      "sector_activity",
-    ]), [downloadCommonCsv]);
+  const downloadConsolidatedCsv = useCallback(async () => {
+    try {
+      const response = await API.get("/common-dashboard/multitax-records", {
+        params: { ...recordsQuery.filters, page: recordsQuery.page, page_size: recordsQuery.pageSize, format: "csv" },
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `multitax-records-page-${recordsQuery.page}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      Swal.fire({ icon: "error", text: getErrorMessage(err) });
+    }
+  }, [getErrorMessage, recordsQuery]);
 
   const chartSkeleton = (height = 350) => (
     <Box>
@@ -349,25 +361,28 @@ export default function CommonDashboard() {
     }
   }, [applyIfCurrent, getErrorMessage]);
 
-  const loadConsolidated = useCallback(async (fetchId, requestParams) => {
+  useEffect(() => {
+    const controller = new AbortController();
     setRecordsLoading(true);
     setRecordsError("");
-    try {
-      const recordsRes = await API.get("/common-dashboard/consolidated-records", { params: requestParams });
-      applyIfCurrent(fetchId, () => {
-        setRecords(asArray(recordsRes.data));
-      });
-    } catch (err) {
-      console.error("Error fetching records:", err);
-      applyIfCurrent(fetchId, () => {
-        setRecordsError(getErrorMessage(err));
-      });
-    } finally {
-      applyIfCurrent(fetchId, () => {
-        setRecordsLoading(false);
-      });
-    }
-  }, [applyIfCurrent, getErrorMessage]);
+    API.get("/common-dashboard/multitax-records", {
+      params: { ...recordsQuery.filters, page: recordsQuery.page, page_size: recordsQuery.pageSize },
+      signal: controller.signal,
+    }).then(({ data }) => {
+      if (controller.signal.aborted) return;
+      if (data.page !== recordsQuery.page) {
+        setRecordsQuery((previous) => ({ ...previous, page: data.page }));
+        return;
+      }
+      setRecords(asArray(data.records));
+      setRecordsTotal(Number(data.total) || 0);
+    }).catch((err) => {
+      if (!controller.signal.aborted) setRecordsError(getErrorMessage(err));
+    }).finally(() => {
+      if (!controller.signal.aborted) setRecordsLoading(false);
+    });
+    return () => controller.abort();
+  }, [getErrorMessage, recordsQuery, recordsReload]);
 
   const loadFraudTrend = useCallback(async (fetchId, requestParams) => {
     setFraudTrendLoading(true);
@@ -423,11 +438,9 @@ export default function CommonDashboard() {
       loadRiskExposure(fetchId, requestParams),
       loadSectorAnalysis(fetchId, requestParams),
       loadTopFinancialTins(fetchId, requestParams),
-      loadConsolidated(fetchId, requestParams),
       loadFraudTrend(fetchId, requestParams),
     ]);
   }, [
-    loadConsolidated,
     loadFraudTrend,
     loadOverview,
     loadRiskExposure,
@@ -438,10 +451,13 @@ export default function CommonDashboard() {
   ]);
 
   const loadSummaryStatus = useCallback(async ({ silent = false } = {}) => {
+    if (statusRequestRef.current) return;
+    statusRequestRef.current = true;
     try {
       const res = await API.get("/common-dashboard/rebuild-status");
       if (!isMountedRef.current) return;
       const data = res.data || {};
+      setStatusPollError("");
       const rawStatus = String(data.status || "idle").toLowerCase();
       setSummaryStatus({
         status: rawStatus === "queued" ? "running" : rawStatus,
@@ -452,25 +468,43 @@ export default function CommonDashboard() {
       });
     } catch (err) {
       if (!silent) console.error("Error fetching summary status:", err);
+      if (isMountedRef.current) setStatusPollError("Unable to read refresh status. The job may still be running.");
+    } finally {
+      statusRequestRef.current = false;
     }
   }, []);
 
   const startSummaryRebuild = useCallback(async () => {
+    if (rebuildStartingRef.current) return;
+    rebuildStartingRef.current = true;
+    setRebuildStarting(true);
     try {
       await API.post("/common-dashboard/rebuild-summary");
+      summaryStatusTransitionRef.current = "running";
+      setSummaryStatus((previous) => ({ ...previous, status: "running", progress: 0, currentStep: "Preparing Multi-Tax Integration", error: "" }));
       setSummaryDialogOpen(true);
       await loadSummaryStatus();
     } catch (err) {
       if (err?.response?.status === 409) {
+        summaryStatusTransitionRef.current = "running";
+        setSummaryStatus((previous) => ({ ...previous, status: "running", error: "" }));
         setSummaryDialogOpen(true);
         await loadSummaryStatus();
         return;
       }
       console.error("Error starting summary rebuild:", err);
       if (isMountedRef.current) {
-        setSummaryStatus((prev) => ({ ...prev, status: "failed", error: getErrorMessage(err) }));
+        if (!err?.response || err.response.status === 503) {
+          setSummaryStatus((prev) => ({ ...prev, status: "running", currentStep: "Checking refresh status", error: "" }));
+          setStatusPollError("Refresh startup was not confirmed. Checking the server before retrying.");
+        } else {
+          setSummaryStatus((prev) => ({ ...prev, status: "failed", error: getErrorMessage(err) }));
+        }
         setSummaryDialogOpen(true);
       }
+    } finally {
+      rebuildStartingRef.current = false;
+      if (isMountedRef.current) setRebuildStarting(false);
     }
   }, [getErrorMessage, loadSummaryStatus]);
 
@@ -478,6 +512,8 @@ export default function CommonDashboard() {
     const isRunning = summaryStatus.status === "running";
     if (isRunning) {
       setSummaryDialogOpen(true);
+    }
+    if (isRunning || statusPollError) {
       if (!rebuildPollIntervalRef.current) {
         rebuildPollIntervalRef.current = window.setInterval(() => loadSummaryStatus({ silent: true }), 2000);
       }
@@ -488,13 +524,15 @@ export default function CommonDashboard() {
     if (summaryStatusTransitionRef.current === "running" && summaryStatus.status === "completed") {
       setSummaryDialogOpen(false);
       reloadDashboard();
+      setRecordsReload((value) => value + 1);
       loadTinOptions(tinInputValue.trim());
     }
     summaryStatusTransitionRef.current = summaryStatus.status;
-  }, [loadSummaryStatus, loadTinOptions, reloadDashboard, summaryStatus.status, tinInputValue]);
+  }, [loadSummaryStatus, loadTinOptions, reloadDashboard, summaryStatus.status, statusPollError, tinInputValue]);
 
   useEffect(() => {
     isMountedRef.current = true;
+    loadSummaryStatus();
     return () => {
       if (rebuildPollIntervalRef.current) {
         window.clearInterval(rebuildPollIntervalRef.current);
@@ -502,7 +540,7 @@ export default function CommonDashboard() {
       }
       isMountedRef.current = false;
     };
-  }, []);
+  }, [loadSummaryStatus]);
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
@@ -531,6 +569,7 @@ export default function CommonDashboard() {
     const nextFilters = { startDate, endDate, selectedTin };
     setIsSubmitting(true);
     setAppliedFilters(nextFilters);
+    setRecordsQuery((previous) => ({ ...previous, filters: buildParams(nextFilters), page: 1 }));
     Promise.all([
       reloadDashboard(buildParams(nextFilters)),
       loadTinOptions(tinInputValue.trim()),
@@ -658,14 +697,17 @@ export default function CommonDashboard() {
 
   /* ================= TABLE ================= */
   const recordColumns = useMemo(() => [
-    { name: "TIN", selector: (r) => str(r?.tin ?? r?.tin_number ?? r?.tinNumber, ""), sortable: true },
-    { name: "Taxpayer", selector: (r) => str(r?.taxpayer ?? r?.taxpayer_name ?? r?.taxpayerName) },
-    { name: "Year", selector: (r) => str(r?.tax_period_year ?? r?.year ?? r?.taxPeriodYear, "") },
-    { name: "Income", selector: (r) => num(r?.total_income ?? r?.income) },
-    { name: "Profit", selector: (r) => num(r?.profit) },
-    { name: "Tax", selector: (r) => num(r?.cit_tax ?? r?.tax) },
-    { name: "Sector", selector: (r) => str(r?.sector_activity ?? r?.sector ?? r?.sectorActivity) },
-    { name: "Risk", selector: (r) => str(r?.predicted_fraud ?? r?.risk_category ?? r?.riskCategory) },
+    { name: "TIN", selector: (r) => str(r.tin, "") },
+    { name: "Taxpayer", selector: (r) => str(r.taxpayer_name) },
+    { name: "Year", selector: (r) => str(r.tax_period_year, "") },
+    { name: "Account", selector: (r) => str(r.tax_account_number, "") },
+    { name: "Assessment", selector: (r) => str(r.assessment_number, "") },
+    { name: "CIT Gross Income", selector: (r) => num(r.cit_total_gross_income) },
+    { name: "CIT Tax Payable", selector: (r) => num(r.cit_total_tax_payable) },
+    { name: "GST Sales Difference", selector: (r) => num(r.gst_vs_cit_sales_diff_abs) },
+    { name: "SWT Salary Difference", selector: (r) => num(r.swt_vs_cit_salary_diff_abs) },
+    { name: "Sector", selector: (r) => str(r.sector_activity) },
+    { name: "Multi-Tax Issue", selector: (r) => str(r.multi_tax_issue) },
   ], []);
 
   const fraudBarOptions = useMemo(() => ({
@@ -847,8 +889,8 @@ export default function CommonDashboard() {
                         </div>
 
                         <div className="d-flex align-items-center gap-2 hideme">
-                          <Button variant="outlined" color="primary" size="small" disabled={summaryStatus.status === "running"} onClick={startSummaryRebuild}>
-                            Refresh Dashboard Data
+                          <Button variant="outlined" color="primary" size="small" disabled={rebuildStarting || summaryStatus.status === "running"} onClick={startSummaryRebuild}>
+                            Run Multi-Tax Integration
                           </Button>
                           <Button variant="contained" color="primary" size="small" onClick={downloadDashboardPDF}>
                             Download PDF
@@ -1153,23 +1195,32 @@ export default function CommonDashboard() {
                         {/* MAIN TABLE */}
                         <Paper className="p-3 mb-4 table-responsive">
                           <div className="d-flex justify-content-between align-items-center">
-                            <h6>Consolidated Records</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadConsolidatedCsv}>
-                              CSV
+                            <h6>Multi-Tax Records ({recordsTotal.toLocaleString()})</h6>
+                            <Button size="small" onClick={() => setRecordsQuery((previous) => ({ ...previous, filters: { range_type: "all" }, page: 1 }))}>Show all records</Button>
+                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadConsolidatedCsv} disabled={recordsLoading || !!recordsError || !hasRecordsData}>
+                              CSV (current page)
                             </Button>
                           </div>
-                          {recordsLoading ? (
-                            <Skeleton variant="rectangular" height={320} sx={{ borderRadius: 2 }} />
-                          ) : recordsError ? null : hasRecordsData ? (
-                            <DataTable
-                              columns={recordColumns}
-                              data={records}
-                              pagination
-                              customStyles={tableCustomStyles}
-                            />
-                          ) : (
-                            renderNoData()
-                          )}
+                          <p className="text-muted small">
+                            {recordsQuery.filters.range_type === "all" ? "All taxpayers and all periods." : "Showing the submitted TIN and period filters."}
+                          </p>
+                          <DataTable
+                            key={`${recordsQuery.page}-${recordsQuery.pageSize}`}
+                            columns={recordColumns}
+                            data={recordsError ? [] : records}
+                            progressPending={recordsLoading}
+                            progressComponent={<Skeleton variant="rectangular" height={320} width="100%" />}
+                            noDataComponent={recordsError ? "Records could not be loaded." : "No Multi-Tax records found."}
+                            pagination
+                            paginationServer
+                            paginationTotalRows={recordsTotal}
+                            paginationPerPage={recordsQuery.pageSize}
+                            paginationDefaultPage={recordsQuery.page}
+                            paginationRowsPerPageOptions={[25, 50, 100, 200]}
+                            onChangePage={(page) => setRecordsQuery((previous) => ({ ...previous, page }))}
+                            onChangeRowsPerPage={(pageSize) => setRecordsQuery((previous) => ({ ...previous, pageSize, page: 1 }))}
+                            customStyles={tableCustomStyles}
+                          />
                           {renderSectionError(recordsError)}
                         </Paper>
                       </div>
@@ -1187,8 +1238,9 @@ export default function CommonDashboard() {
             fullWidth
             maxWidth="xs"
           >
-            <DialogTitle>Refreshing Dashboard Data</DialogTitle>
+            <DialogTitle>Run Multi-Tax Integration</DialogTitle>
             <DialogContent>
+              {statusPollError && <Alert severity="warning">{statusPollError}</Alert>}
               <Typography variant="body2" sx={{ mb: 1 }}>
                 {summaryStatus.currentStep || "Refreshing dashboard summary"}
               </Typography>

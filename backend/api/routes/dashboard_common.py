@@ -1,12 +1,13 @@
 from datetime import datetime
 import uuid
-import logging
 import csv
 import time
 import traceback
 from io import StringIO
 import threading
-from flask import Blueprint, Response, current_app, jsonify, request, has_app_context
+import os
+import socket
+from flask import Blueprint, Response, current_app, jsonify, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from ..extensions import db
@@ -33,8 +34,6 @@ SUMMARY_REQUIRED_INDEXES = {
     "idx_multitax_dashboard_summary_year_tin": (False, ["tax_period_year", "tin"]),
 }
 SUMMARY_OBSOLETE_INDEX_NAMES = {"uq_summ_uty", "idx_summ_uy", "idx_summ_ut", "idx_summ_us", "idx_summ_upf", "idx_summ_uyt", "uq_summ_ty", "idx_summ_y", "idx_summ_t", "idx_summ_s", "idx_summ_pf", "idx_summ_yt"}
-_SUMMARY_THREAD_LOCK = threading.Lock()
-_SUMMARY_WORKER_STATE = {"running": False, "thread_name": None, "started_at": None}
 
 def _table_exists(conn, table_name):
     return bool(conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name"), {"table_name": table_name}).scalar())
@@ -85,11 +84,14 @@ def _ensure_summary_indexes(conn, table_name=SUMMARY_TABLE):
         conn.execute(text(f"ALTER TABLE {table_name} ADD {uniqueness}INDEX {index_name} ({', '.join(columns)})"))
 
 def _summary_status_table_ddl():
-    return f"CREATE TABLE IF NOT EXISTS {SUMMARY_STATUS_TABLE} (id TINYINT NOT NULL PRIMARY KEY, status VARCHAR(20) NOT NULL DEFAULT 'idle', progress INT NOT NULL DEFAULT 0, current_step VARCHAR(255) NULL, last_updated DATETIME NULL, started_at DATETIME NULL, completed_at DATETIME NULL, error_message LONGTEXT NULL, last_sql LONGTEXT NULL, last_traceback LONGTEXT NULL, source_rows BIGINT NULL, temp_rows BIGINT NULL, live_rows BIGINT NULL, elapsed_ms BIGINT NULL, tmp_table_name VARCHAR(255) NULL, worker_running TINYINT(1) NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    return f"CREATE TABLE IF NOT EXISTS {SUMMARY_STATUS_TABLE} (id TINYINT NOT NULL PRIMARY KEY, job_id VARCHAR(36) NULL, status VARCHAR(20) NOT NULL DEFAULT 'idle', progress INT NOT NULL DEFAULT 0, current_step VARCHAR(255) NULL, last_updated DATETIME NULL, started_at DATETIME NULL, completed_at DATETIME NULL, error_message LONGTEXT NULL, last_sql LONGTEXT NULL, last_traceback LONGTEXT NULL, source_rows BIGINT NULL, temp_rows BIGINT NULL, live_rows BIGINT NULL, elapsed_ms BIGINT NULL, tmp_table_name VARCHAR(255) NULL, worker_running TINYINT(1) NOT NULL DEFAULT 0, updated_at DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 
 def _ensure_summary_status_columns(conn):
     columns = _table_columns(conn, SUMMARY_STATUS_TABLE) if _table_exists(conn, SUMMARY_STATUS_TABLE) else set()
     required_columns = {
+        # Idempotent compatibility migration for deployed status tables that
+        # predate job_id.  It never drops/recreates the table or status row.
+        "job_id": "ALTER TABLE {table} ADD COLUMN job_id VARCHAR(36) NULL",
         "last_sql": "ALTER TABLE {table} ADD COLUMN last_sql LONGTEXT NULL",
         "last_traceback": "ALTER TABLE {table} ADD COLUMN last_traceback LONGTEXT NULL",
         "source_rows": "ALTER TABLE {table} ADD COLUMN source_rows BIGINT NULL",
@@ -125,25 +127,34 @@ def _ensure_summary_objects(conn):
     _ensure_summary_status_row(conn)
 
 def _acquire_named_lock(conn, lock_name, timeout_seconds=0):
-    try:
-        return str(conn.execute(text("SELECT GET_LOCK(:lock_name, :timeout_seconds)"), {"lock_name": lock_name, "timeout_seconds": int(timeout_seconds)}).scalar()) == "1"
-    except Exception:
-        return False
+    result = conn.execute(text("SELECT GET_LOCK(:lock_name, :timeout_seconds)"), {"lock_name": lock_name, "timeout_seconds": int(timeout_seconds)}).scalar()
+    if result is None:
+        raise RuntimeError("Unable to acquire dashboard rebuild lock.")
+    return str(result) == "1"
 
 def _release_named_lock(conn, lock_name):
     try:
-        conn.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
+        released = conn.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name}).scalar()
+        if str(released) != "1":
+            conn.invalidate()
     except Exception:
-        pass
+        # Never return a possibly lock-owning session to the connection pool.
+        conn.invalidate()
 
 def _get_summary_status_row(conn):
-    _ensure_summary_status_objects(conn)
     return conn.execute(text(f"SELECT * FROM {SUMMARY_STATUS_TABLE} WHERE id = 1 LIMIT 1")).mappings().first()
 
-def _update_summary_status(engine, **fields):
+def _assert_summary_lock(conn):
+    owned = conn.execute(text("SELECT IS_USED_LOCK(:name) = CONNECTION_ID()"), {"name": SUMMARY_REBUILD_LOCK_NAME}).scalar()
+    if str(owned) != "1":
+        raise RuntimeError("Dashboard refresh lost its database lock; stopping this worker.")
+
+
+def _update_summary_status(conn, **fields):
     if not fields:
         return
     tracked_fields = [
+        "job_id",
         "status",
         "progress",
         "current_step",
@@ -160,25 +171,20 @@ def _update_summary_status(engine, **fields):
         "tmp_table_name",
         "worker_running",
     ]
-    try:
-        with engine.begin() as conn:
-            _ensure_summary_status_objects(conn)
-            row = _get_summary_status_row(conn) or {}
-            payload = {"id": 1}
-            for key in tracked_fields:
-                payload[key] = fields.get(key, row.get(key))
-            payload["status"] = payload.get("status") or "idle"
-            payload["progress"] = int(payload.get("progress") or 0)
-            payload["worker_running"] = 1 if payload.get("worker_running") else 0
-            conn.execute(
-                text(
-                    f"INSERT INTO {SUMMARY_STATUS_TABLE} (id, status, progress, current_step, last_updated, started_at, completed_at, error_message, last_sql, last_traceback, source_rows, temp_rows, live_rows, elapsed_ms, tmp_table_name, worker_running, updated_at) VALUES (:id, :status, :progress, :current_step, :last_updated, :started_at, :completed_at, :error_message, :last_sql, :last_traceback, :source_rows, :temp_rows, :live_rows, :elapsed_ms, :tmp_table_name, :worker_running, NOW()) ON DUPLICATE KEY UPDATE status = VALUES(status), progress = VALUES(progress), current_step = VALUES(current_step), last_updated = VALUES(last_updated), started_at = VALUES(started_at), completed_at = VALUES(completed_at), error_message = VALUES(error_message), last_sql = VALUES(last_sql), last_traceback = VALUES(last_traceback), source_rows = VALUES(source_rows), temp_rows = VALUES(temp_rows), live_rows = VALUES(live_rows), elapsed_ms = VALUES(elapsed_ms), tmp_table_name = VALUES(tmp_table_name), worker_running = VALUES(worker_running), updated_at = NOW()"
-                ),
-                payload,
-            )
-    except Exception:
-        logger = current_app.logger if has_app_context() else logging.getLogger(__name__)
-        logger.exception("Unable to update dashboard summary rebuild status.")
+    if set(fields) - set(tracked_fields):
+        raise ValueError("Unknown dashboard status field")
+    missing_columns = set(fields) - _table_columns(conn, SUMMARY_STATUS_TABLE)
+    if missing_columns:
+        raise RuntimeError(
+            "Dashboard status schema is missing required column(s): "
+            + ", ".join(sorted(missing_columns))
+        )
+    _assert_summary_lock(conn)
+    if not _get_summary_status_row(conn):
+        raise RuntimeError("Dashboard summary status row is missing; initialization is required.")
+    assignments = ", ".join(f"{key} = :{key}" for key in fields)
+    conn.execute(text(f"UPDATE {SUMMARY_STATUS_TABLE} SET {assignments}, updated_at = NOW() WHERE id = 1"), fields)
+    conn.commit()
 
 def _format_status_datetime(value):
     if value is None:
@@ -210,34 +216,19 @@ def _status_debug_snapshot(conn):
         "last_traceback": row.get("last_traceback"),
     }
 
-def _mark_stale_rebuild_failed_if_needed(engine):
-    if _SUMMARY_WORKER_STATE.get("running"):
-        return
-    with engine.begin() as conn:
-        _ensure_summary_status_objects(conn)
-        row = _get_summary_status_row(conn) or {}
-        status_name = str(row.get("status") or "idle").lower()
-        worker_running = bool(row.get("worker_running"))
-        if status_name not in {"queued", "running"} or not worker_running:
-            return
-        error_message = "Dashboard summary rebuild is marked running, but no worker is active in the current Flask process. Restarted or stale run detected. Please start rebuild again."
-        current_app.logger.warning("Common dashboard rebuild stale status detected; marking failed")
-        conn.execute(text(f"UPDATE {SUMMARY_STATUS_TABLE} SET status = 'failed', progress = 0, current_step = 'Failed', completed_at = NOW(), error_message = :error_message, worker_running = 0, updated_at = NOW() WHERE id = 1"), {"error_message": error_message})
-
 def _summary_status_payload():
-    _mark_stale_rebuild_failed_if_needed(db.engine)
+    # Polling is read-only. A different Gunicorn worker must never alter the
+    # status of the connection that owns the rebuild lock.
     with db.engine.begin() as conn:
-        _ensure_summary_status_objects(conn)
-        _ensure_summary_status_row(conn)
         row = _get_summary_status_row(conn) or {}
-        summary_last_updated = conn.execute(text(f"SELECT MAX(updated_at) FROM {SUMMARY_TABLE}")).scalar()
+        summary_last_updated = row.get("last_updated")
     status = str(row.get("status") or "idle").lower()
     if status in {"queued", "running"}:
-        return {"status": "running", "progress": int(row.get("progress") or 0), "current_step": row.get("current_step") or "Refreshing dashboard summary"}
+        return {"job_id": row.get("job_id"), "status": status, "progress": int(row.get("progress") or 0), "current_step": row.get("current_step") or "Refreshing dashboard summary", "started_at": _format_status_datetime(row.get("started_at")), "last_updated": _format_status_datetime(row.get("last_updated")), "completed_at": None, "rows_saved": int(row.get("live_rows") or 0)}
     if status == "failed":
-        return {"status": "failed", "progress": int(row.get("progress") or 0), "current_step": row.get("current_step") or "Failed", "error": row.get("error_message") or "Dashboard summary refresh failed.", "last_updated": _format_status_datetime(summary_last_updated or row.get("last_updated"))}
+        return {"job_id": row.get("job_id"), "status": "failed", "progress": int(row.get("progress") or 0), "current_step": row.get("current_step") or "Failed", "error": row.get("error_message") or "Dashboard summary refresh failed.", "error_message": row.get("error_message"), "started_at": _format_status_datetime(row.get("started_at")), "last_updated": _format_status_datetime(summary_last_updated or row.get("last_updated")), "completed_at": _format_status_datetime(row.get("completed_at")), "rows_saved": int(row.get("live_rows") or 0)}
     last_updated = summary_last_updated or row.get("last_updated") or row.get("completed_at")
-    return {"status": "completed", "last_updated": _format_status_datetime(last_updated), "progress": 100, "current_step": "Completed"} if last_updated else {"status": "idle", "progress": 0, "current_step": "Not built yet", "last_updated": None}
+    return {"job_id": row.get("job_id"), "status": "completed", "last_updated": _format_status_datetime(last_updated), "started_at": _format_status_datetime(row.get("started_at")), "completed_at": _format_status_datetime(row.get("completed_at")), "progress": 100, "current_step": "Completed", "rows_saved": int(row.get("live_rows") or 0)} if last_updated else {"job_id": None, "status": "idle", "progress": 0, "current_step": "Not built yet", "last_updated": None, "started_at": None, "completed_at": None, "rows_saved": 0}
 
 def _ensure_summary_ready():
     with db.engine.begin() as conn:
@@ -448,7 +439,7 @@ def _rebuild_summary_insert_sql(conn, target_table):
         {registration_join}
     """
 
-def _run_summary_rebuild():
+def _run_summary_rebuild(lock_conn):
     engine = db.engine
     rebuild_token = uuid.uuid4().hex[:12]
     tmp_table_name = f"{SUMMARY_TMP_TABLE}_{rebuild_token}"
@@ -462,7 +453,7 @@ def _run_summary_rebuild():
     rebuild_started_at = time.perf_counter()
 
     _log_rebuild_step("Starting rebuild", tmp_table_name=tmp_table_name, old_table_name=old_table_name)
-    _update_summary_status(engine, status="running", progress=5, current_step="Starting rebuild", started_at=datetime.now(), completed_at=None, error_message=None, last_sql=None, last_traceback=None, source_rows=0, temp_rows=0, live_rows=0, elapsed_ms=0, tmp_table_name=tmp_table_name, worker_running=True)
+    _update_summary_status(lock_conn, status="running", progress=65, current_step="Rebuilding Dashboard Summary", completed_at=None, error_message=None, last_sql=None, last_traceback=None, source_rows=0, temp_rows=0, live_rows=0, elapsed_ms=0, tmp_table_name=tmp_table_name, worker_running=True)
     try:
         with engine.begin() as conn:
             _ensure_summary_schema(conn)
@@ -478,14 +469,14 @@ def _run_summary_rebuild():
             conn.execute(text(_summary_table_ddl(tmp_table_name)))
             show_create_row = conn.execute(text(f"SHOW CREATE TABLE {tmp_table_name}")).fetchone()
             _log_rebuild_step("Temp table created", elapsed_ms=int((time.perf_counter() - step_started_at) * 1000), show_create=show_create_row[1] if show_create_row and len(show_create_row) > 1 else None)
-            _update_summary_status(engine, status="running", progress=15, current_step="Creating temp table", source_rows=source_rows, tmp_table_name=tmp_table_name, worker_running=True)
+            _update_summary_status(lock_conn, status="running", progress=70, current_step="Creating temp table", source_rows=source_rows, tmp_table_name=tmp_table_name, worker_running=True)
 
         with engine.begin() as conn:
             _ensure_summary_schema(conn)
             _log_rebuild_step("Building INSERT SQL")
             generated_sql = _rebuild_summary_insert_sql(conn, tmp_table_name)
             _log_rebuild_step("Generated SQL", sql=generated_sql)
-            _update_summary_status(engine, status="running", progress=25, current_step="Executing INSERT", last_sql=generated_sql, source_rows=source_rows, tmp_table_name=tmp_table_name, worker_running=True)
+            _update_summary_status(lock_conn, status="running", progress=75, current_step="Executing INSERT", last_sql=generated_sql, source_rows=source_rows, tmp_table_name=tmp_table_name, worker_running=True)
 
             insert_started_at = time.perf_counter()
             _log_rebuild_step("Executing INSERT")
@@ -496,12 +487,12 @@ def _run_summary_rebuild():
             _log_rebuild_step("Inserted temp rows", inserted_rows=temp_rows)
             if temp_rows <= 0:
                 raise RuntimeError("Summary rebuild failed. No rows inserted into temp table.")
-            _update_summary_status(engine, status="running", progress=60, current_step="Temp table populated", source_rows=source_rows, temp_rows=temp_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), last_sql=generated_sql, tmp_table_name=tmp_table_name, worker_running=True)
+            _update_summary_status(lock_conn, status="running", progress=85, current_step="Temp table populated", source_rows=source_rows, temp_rows=temp_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), last_sql=generated_sql, tmp_table_name=tmp_table_name, worker_running=True)
 
         with engine.begin() as conn:
             before_live_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {SUMMARY_TABLE}")).scalar() or 0)
             _log_rebuild_step("Renaming temp table", temp_rows=temp_rows, live_summary_rows_before=before_live_rows)
-            _update_summary_status(engine, status="running", progress=80, current_step="Renaming temp table", source_rows=source_rows, temp_rows=temp_rows, live_rows=before_live_rows, last_sql=generated_sql, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=tmp_table_name, worker_running=True)
+            _update_summary_status(lock_conn, status="running", progress=95, current_step="Renaming temp table", source_rows=source_rows, temp_rows=temp_rows, live_rows=before_live_rows, last_sql=generated_sql, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=tmp_table_name, worker_running=True)
             conn.execute(text(f"DROP TABLE IF EXISTS {old_table_name}"))
             conn.execute(text(f"RENAME TABLE {SUMMARY_TABLE} TO {old_table_name}, {tmp_table_name} TO {SUMMARY_TABLE}"))
             swap_completed = True
@@ -524,113 +515,107 @@ def _run_summary_rebuild():
         if expected_grouped_rows != live_rows:
             current_app.logger.warning("Common dashboard rebuild row mismatch expected_grouped_rows=%s live_rows=%s", expected_grouped_rows, live_rows)
 
-        _update_summary_status(engine, status="completed", progress=100, current_step="Completed", last_updated=last_updated or datetime.now(), completed_at=datetime.now(), error_message=None, last_sql=generated_sql, last_traceback=None, source_rows=source_rows, temp_rows=temp_rows, live_rows=live_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=None, worker_running=False)
+        _update_summary_status(lock_conn, status="completed", progress=100, current_step="Completed", last_updated=last_updated or datetime.now(), completed_at=datetime.now(), error_message=None, last_sql=generated_sql, last_traceback=None, source_rows=source_rows, temp_rows=temp_rows, live_rows=live_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=None, worker_running=False)
     except Exception as exc:
         tb = traceback.format_exc()
         current_app.logger.exception("Common dashboard rebuild failed tmp_table_name=%s old_table_name=%s", tmp_table_name, old_table_name)
-        with engine.begin() as cleanup_conn:
-            if not swap_completed:
-                cleanup_conn.execute(text(f"DROP TABLE IF EXISTS {tmp_table_name}"))
-            cleanup_conn.execute(text(f"DROP TABLE IF EXISTS {old_table_name}"))
-        _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=str(exc), last_sql=generated_sql, last_traceback=tb, source_rows=source_rows, temp_rows=temp_rows, live_rows=live_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=None, worker_running=False)
+        try:
+            with engine.begin() as cleanup_conn:
+                if not swap_completed:
+                    cleanup_conn.execute(text(f"DROP TABLE IF EXISTS {tmp_table_name}"))
+                cleanup_conn.execute(text(f"DROP TABLE IF EXISTS {old_table_name}"))
+        except Exception:
+            current_app.logger.exception("Summary cleanup failed; preserving the original rebuild error")
+        _update_summary_status(lock_conn, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=str(exc), last_sql=generated_sql, last_traceback=tb, source_rows=source_rows, temp_rows=temp_rows, live_rows=live_rows, elapsed_ms=int((time.perf_counter() - rebuild_started_at) * 1000), tmp_table_name=None, worker_running=False)
         raise
 
 
-def _background_summary_rebuild_worker(app, current_user_id):
+def _background_summary_rebuild_worker(app, current_user_id, admission, admitted):
+    # admission is only an HTTP startup handshake, never a source of job liveness.
     with app.app_context():
-        engine = db.engine
         lock_conn = None
         lock_acquired = False
         integration_completed = False
-        _SUMMARY_WORKER_STATE["running"] = True
-        _SUMMARY_WORKER_STATE["thread_name"] = threading.current_thread().name
-        _SUMMARY_WORKER_STATE["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        current_app.logger.info("Common dashboard refresh worker started thread=%s", threading.current_thread().name)
+        operation_id = uuid.uuid4().hex
         try:
+            engine = db.engine
             lock_conn = engine.connect()
-            lock_acquired = _acquire_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME, timeout_seconds=0)
-            current_app.logger.info("Common dashboard rebuild worker lock attempt acquired=%s", lock_acquired)
+            lock_acquired = _acquire_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME)
             if not lock_acquired:
-                _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message="Dashboard summary rebuild worker could not acquire rebuild lock.", worker_running=False)
-                current_app.logger.warning("Dashboard summary rebuild skipped because another rebuild owns the lock.")
+                row = _get_summary_status_row(lock_conn) or {}
+                admission.update(code=409, payload={"status": "running",
+                    "message": "Dashboard refresh is already running.",
+                    "progress": int(row.get("progress") or 0),
+                    "current_step": row.get("current_step") or "Preparing refresh"})
                 return
-            def _multitax_status_callback(**updates):
-                stage = updates.get("stage")
-                detail = updates.get("detail")
-                progress_by_stage = {
-                    "refresh_started": 10,
-                    "aggregation_complete": 35,
-                    "integration_started": 45,
-                    "integration_completed": 60,
-                }
-                step_by_stage = {
-                    "refresh_started": "Refreshing Multi-Tax aggregates",
-                    "aggregation_complete": "Multi-Tax aggregation complete",
-                    "integration_started": "Running Multi-Tax Integration",
-                    "integration_completed": "Multi-Tax Integration complete",
-                }
-                if updates.get("status") == "error":
-                    _update_summary_status(
-                        engine,
-                        status="failed",
-                        progress=0,
-                        current_step="Multi-Tax Integration failed",
-                        completed_at=datetime.now(),
-                        error_message=(
-                            "Multi-Tax Integration failed. Dashboard summary was not rebuilt. "
-                            f"{detail or ''}"
-                        ).strip(),
-                        worker_running=False,
-                    )
-                    return
-                _update_summary_status(
-                    engine,
-                    status="running",
-                    progress=progress_by_stage.get(stage, 5),
-                    current_step=step_by_stage.get(stage, "Preparing Multi-Tax Integration"),
-                    worker_running=True,
-                )
+            if time.monotonic() > admission.get("deadline", float("inf")):
+                admission.update(code=503, payload={"status": "unavailable",
+                    "error": "Refresh startup took too long. Please check status and retry."})
+                return
+            # Acquire and retain the lock BEFORE publishing queued. No transfer
+            # of a request connection, and no unlocked request/thread handoff.
+            _update_summary_status(lock_conn, job_id=operation_id, status="queued", progress=0,
+                current_step="Queued", started_at=datetime.now(), completed_at=None,
+                error_message=None, last_sql=None, last_traceback=None,
+                source_rows=None, temp_rows=None, live_rows=None, elapsed_ms=None,
+                tmp_table_name=None, worker_running=True)
+            admission.update(code=202, payload={"status": "started"})
+            admitted.set()
+            current_app.logger.info(
+                "Common dashboard refresh operation_id=%s pid=%s hostname=%s thread=%s started",
+                operation_id, os.getpid(), socket.gethostname(), threading.get_ident())
 
-            _update_summary_status(
-                engine,
-                status="running",
-                progress=5,
-                current_step="Preparing Multi-Tax Integration",
-                worker_running=True,
-            )
-            current_app.logger.info("Common dashboard refresh worker starting Multi-Tax Integration")
-            refresh_multi_tax_tables(
-                current_user_id=current_user_id,
-                status_callback=_multitax_status_callback,
-            )
+            def _multitax_status_callback(**updates):
+                if updates.get("status") == "error":
+                    raise RuntimeError(updates.get("detail") or "Multi-Tax Integration failed")
+                if updates.get("stage") == "integration_completed" and updates.get("rows_saved") == 0:
+                    raise RuntimeError("Multi-Tax Integration returned zero rows. Dashboard summary was not rebuilt.")
+                stages = {
+                    "refresh_started": (10, "Refreshing Multi-Tax aggregates"),
+                    "aggregation_complete": (35, "Multi-Tax aggregation complete"),
+                    "integration_started": (45, "Running Multi-Tax Integration"),
+                    "integration_completed": (60, "Multi-Tax Integration complete"),
+                }
+                progress, step = stages.get(updates.get("stage"), (5, "Preparing Multi-Tax Integration"))
+                _update_summary_status(lock_conn, status="running", progress=progress,
+                    current_step=step, worker_running=True)
+                current_app.logger.info("Common dashboard refresh operation_id=%s stage=%s",
+                                        operation_id, updates.get("stage"))
+
+            _update_summary_status(lock_conn, status="running", progress=5,
+                current_step="Preparing Multi-Tax Integration", worker_running=True)
+            refresh_multi_tax_tables(current_user_id=current_user_id,
+                                     status_callback=_multitax_status_callback)
+            _assert_summary_lock(lock_conn)
             integration_completed = True
-            _update_summary_status(
-                engine,
-                status="running",
-                progress=65,
-                current_step="Rebuilding dashboard summary",
-                worker_running=True,
-            )
-            current_app.logger.info("Common dashboard refresh worker rebuilding summary after Multi-Tax Integration")
-            _run_summary_rebuild()
-            current_app.logger.info("Common dashboard refresh worker finished successfully")
-        except Exception as exc:
+            _run_summary_rebuild(lock_conn)
+            current_app.logger.info("Common dashboard refresh operation_id=%s completed", operation_id)
+        except BaseException as exc:
             tb = traceback.format_exc()
-            current_app.logger.exception("Common dashboard refresh failed.")
-            error_message = str(exc)
+            current_app.logger.exception("Common dashboard refresh operation_id=%s failed", operation_id)
+            message = str(exc)
             if not integration_completed:
-                error_message = (
-                    "Multi-Tax Integration failed. Dashboard summary was not rebuilt. "
-                    f"{error_message}"
-                )
-            _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=error_message, last_traceback=tb, worker_running=False)
+                message = "Multi-Tax Integration failed. Dashboard summary was not rebuilt. " + message
+            if lock_acquired:
+                try:
+                    _update_summary_status(lock_conn, status="failed", progress=0,
+                        current_step="Failed" if integration_completed else "Multi-Tax Integration failed",
+                        completed_at=datetime.now(), error_message=message,
+                        last_traceback=tb, worker_running=False)
+                except Exception:
+                    # A disconnected owner must never overwrite a newer job.
+                    # Shared lock recovery will mark the abandoned run failed.
+                    current_app.logger.exception("Unable to persist failure for operation_id=%s", operation_id)
+            if not admitted.is_set():
+                admission.update(code=500, payload={"status": "failed", "error": message})
         finally:
-            if lock_acquired and lock_conn is not None:
-                _release_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME)
+            admitted.set()
             if lock_conn is not None:
-                lock_conn.close()
-            _SUMMARY_WORKER_STATE["running"] = False
-            current_app.logger.info("Common dashboard refresh worker stopped thread=%s", threading.current_thread().name)
+                try:
+                    if lock_acquired:
+                        _release_named_lock(lock_conn, SUMMARY_REBUILD_LOCK_NAME)
+                finally:
+                    lock_conn.close()
 
 
 def _summary_rows(query_sql, params):
@@ -641,43 +626,82 @@ def _summary_data(rows, mapping):
     return [{key: fn(r) for key, fn in mapping.items()} for r in rows]
 
 
+MULTITAX_RECORD_COLUMNS = (
+    "tin", "tax_period_year", "tax_account_number", "assessment_number",
+    "taxpayer_name", "taxpayer_type", "sector_activity", "enterprise_activity",
+    "cit_gross_sales", "cit_total_gross_income", "cit_salaries_or_wages",
+    "cit_total_tax_payable", "cit_net_tax_payable", "gst_total_sales_income",
+    "gst_taxable_sales", "gst_output_debits", "gst_input_credits", "gst_payable",
+    "gst_refundable", "swt_total_salary_wages_paid", "swt_total_tax_deducted",
+    "swt_employees_on_payroll", "swt_employees_paid_swt", "gst_vs_cit_sales_diff",
+    "gst_vs_cit_sales_diff_abs", "gst_vs_cit_sales_pct", "swt_vs_cit_salary_diff",
+    "swt_vs_cit_salary_diff_abs", "swt_vs_cit_salary_pct", "gst_validation",
+    "swt_validation", "cit_fraud_flag", "gst_fraud_flag", "swt_fraud_flag",
+    "flagged_in_tax_types", "multi_tax_issue",
+)
+
+
+@bp.get("/multitax-records")
+@jwt_required()
+def multitax_records():
+    try:
+        page = int(request.args.get("page", "1"))
+        page_size = int(request.args.get("page_size", "50"))
+        if page < 1 or not 1 <= page_size <= 200:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return jsonify({"error": "page must be positive and page_size must be between 1 and 200."}), 400
+    date_filter, query_params = ("1=1", {})
+    if any(key in request.args for key in ("range_type", "start_date", "from_date")):
+        date_filter, query_params = get_date_filter()
+    filters = [date_filter]
+    tin = _get_dashboard_tin()
+    if tin:
+        filters.append("tin = :tin")
+        query_params["tin"] = tin
+    where = " AND ".join(f"({clause})" for clause in filters)
+    columns = ", ".join(MULTITAX_RECORD_COLUMNS)
+    # There is no primary key in the existing result table. Tie-break on all
+    # returned values; exact duplicate records remain separate rows. No schema
+    # change or grouping is introduced. Deep offsets still need profiling.
+    ordering = ", ".join(MULTITAX_RECORD_COLUMNS)
+    with db.engine.connect() as conn:
+        total = int(conn.execute(text(f"SELECT COUNT(*) FROM multi_tax_integration_results WHERE {where}"), query_params).scalar() or 0)
+        page = min(page, max(1, (total + page_size - 1) // page_size))
+        rows = conn.execute(text(f"SELECT {columns} FROM multi_tax_integration_results WHERE {where} ORDER BY {ordering} LIMIT :limit OFFSET :offset"),
+                            {**query_params, "limit": page_size, "offset": (page - 1) * page_size}).mappings().all()
+    # BIGINT account/assessment numbers must not lose precision in JavaScript.
+    records = [{key: str(row[key]) if key in {"tax_account_number", "assessment_number"} and row[key] is not None else row[key]
+                for key in MULTITAX_RECORD_COLUMNS} for row in rows]
+    if request.args.get("format") == "csv":
+        return _build_csv_response(records, f"multitax-records-page-{page}.csv", MULTITAX_RECORD_COLUMNS)
+    return jsonify({"records": records, "total": total, "page": page, "page_size": page_size})
+
+
 @bp.post("/rebuild-summary")
 @jwt_required()
 def rebuild_summary():
-    engine = db.engine
     app = current_app._get_current_object()
     current_user_id = get_authenticated_user_id()
-    current_app.logger.info("Common dashboard rebuild start requested")
+    admission = {"deadline": time.monotonic() + 10}
+    admitted = threading.Event()
     try:
-        with _SUMMARY_THREAD_LOCK:
-            with engine.begin() as conn:
-                _ensure_summary_schema(conn)
-                if not _acquire_named_lock(conn, SUMMARY_REBUILD_LOCK_NAME, timeout_seconds=0):
-                    status_payload = _summary_status_payload()
-                    current_app.logger.warning("Common dashboard rebuild rejected because another rebuild is running")
-                    return jsonify({"status": "running", "message": "Dashboard summary rebuild is already running. Please wait for the current rebuild to complete.", "progress": status_payload.get("progress", 0), "current_step": status_payload.get("current_step")}), 409
-                try:
-                    current_status = _get_summary_status_row(conn) or {}
-                    current_status_name = str(current_status.get("status") or "").lower()
-                    worker_running_flag = bool(current_status.get("worker_running")) or bool(_SUMMARY_WORKER_STATE.get("running"))
-                    if current_status_name in {"queued", "running"} and worker_running_flag:
-                        current_app.logger.warning("Common dashboard rebuild rejected because status table already shows queued/running")
-                        return jsonify({"status": "running", "message": "Dashboard summary rebuild is already running. Please wait for the current rebuild to complete.", "progress": int(current_status.get("progress") or 0), "current_step": current_status.get("current_step") or "Queued"}), 409
-                    if current_status_name in {"queued", "running"} and not worker_running_flag:
-                        current_app.logger.warning("Common dashboard rebuild found stale queued/running status without active worker; resetting state before restart")
-                    conn.execute(text(f"UPDATE {SUMMARY_STATUS_TABLE} SET status = 'queued', progress = 0, current_step = 'Queued', started_at = NOW(), completed_at = NULL, error_message = NULL, last_sql = NULL, last_traceback = NULL, source_rows = NULL, temp_rows = NULL, live_rows = NULL, elapsed_ms = NULL, tmp_table_name = NULL, worker_running = 1, updated_at = NOW() WHERE id = 1"))
-                finally:
-                    _release_named_lock(conn, SUMMARY_REBUILD_LOCK_NAME)
-            worker = threading.Thread(target=_background_summary_rebuild_worker, args=(app, current_user_id), daemon=True, name="multitax-dashboard-summary-rebuild")
-            worker.start()
-            current_app.logger.info("Common dashboard rebuild worker thread started thread=%s alive=%s", worker.name, worker.is_alive())
-            if not worker.is_alive():
-                _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message="Dashboard summary rebuild worker did not start.", worker_running=False)
-                return jsonify({"status": "failed", "error": "Dashboard summary rebuild worker did not start."}), 500
-        return jsonify({"status": "started"}), 202
+        # Run the idempotent status compatibility migration before the worker
+        # can write job_id. Existing rows are retained unchanged.
+        with db.engine.begin() as conn:
+            _ensure_summary_status_schema(conn)
+            _ensure_summary_status_row(conn)
+        worker = threading.Thread(target=_background_summary_rebuild_worker,
+            args=(app, current_user_id, admission, admitted), daemon=True,
+            name="multitax-dashboard-summary-rebuild")
+        worker.start()
+        # Wait only for lock acquisition and queued persistence, not integration.
+        # is_alive() is not a success test: a valid job may complete immediately.
+        if not admitted.wait(timeout=10):
+            return jsonify({"status": "unavailable", "error": "Refresh startup has not been confirmed. Check refresh status before retrying."}), 503
+        return jsonify(admission["payload"]), admission["code"]
     except Exception as exc:
         current_app.logger.exception("Unable to start dashboard summary rebuild.")
-        _update_summary_status(engine, status="failed", progress=0, current_step="Failed", completed_at=datetime.now(), error_message=str(exc), last_traceback=traceback.format_exc(), worker_running=False)
         return jsonify({"status": "failed", "error": str(exc)}), 500
 
 
@@ -696,9 +720,7 @@ def rebuild_summary_status():
 @jwt_required()
 def rebuild_summary_debug():
     try:
-        _mark_stale_rebuild_failed_if_needed(db.engine)
         with db.engine.begin() as conn:
-            _ensure_summary_status_objects(conn)
             snapshot = _status_debug_snapshot(conn)
             source_rows = int(conn.execute(text("SELECT COUNT(*) FROM multi_tax_integration_results")).scalar() or 0)
             summary_rows = int(conn.execute(text(f"SELECT COUNT(*) FROM {SUMMARY_TABLE}")).scalar() or 0)
@@ -715,7 +737,7 @@ def rebuild_summary_debug():
             "current_step": snapshot.get("current_step"),
             "last_error": snapshot.get("last_error"),
             "last_sql": snapshot.get("last_sql"),
-            "worker_running": bool(_SUMMARY_WORKER_STATE.get("running")),
+            "worker_running": snapshot.get("worker_running"),
         })
     except Exception as exc:
         current_app.logger.exception("Unable to fetch dashboard summary debug state.")
