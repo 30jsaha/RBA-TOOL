@@ -8,6 +8,7 @@ import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
 import DataTable from "react-data-table-component";
 import {
+  Autocomplete,
   MenuItem,
   Select,
   FormControl,
@@ -67,7 +68,7 @@ export default function SwtDashboard() {
     series: [],
     chartData: [],
     availableTins: [],
-    selectedTin: "",
+    selectedTin: "ALL",
   });
   const [fraudChart, setFraudChart] = useState({ categories: [], series: [] });
   const [segmentation, setSegmentation] = useState({ labels: [], series: [] });
@@ -451,7 +452,7 @@ export default function SwtDashboard() {
           series: asArray(salaryRes.data?.series),
           chartData: asArray(salaryRes.data?.chart_data),
           availableTins: asArray(salaryRes.data?.available_tins),
-          selectedTin: str(salaryRes.data?.selected_tin, ""),
+          selectedTin: str(salaryRes.data?.selected_tin, "ALL"),
         });
       }).catch(handleSectionError).finally(() => {
         if (requestId === dashboardRequestIdRef.current) {
@@ -616,8 +617,17 @@ export default function SwtDashboard() {
     return () => clearTimeout(timeout);
   }, [fetchProvinceData, shouldLoadProvince]);
 
-  const handleSwtSalaryTinChange = useCallback(async (event) => {
-    const nextTin = event.target.value;
+  const handleSwtSalaryTinChange = useCallback(async (eventOrValue, newValue) => {
+    let nextTin = "ALL";
+    if (newValue && typeof newValue === "object") {
+      nextTin = str(newValue.tin, "ALL");
+    } else if (typeof newValue === "string") {
+      nextTin = newValue.trim() || "ALL";
+    } else if (eventOrValue && typeof eventOrValue === "object" && eventOrValue.target) {
+      nextTin = str(eventOrValue.target.value, "ALL");
+    } else if (typeof eventOrValue === "string") {
+      nextTin = eventOrValue.trim() || "ALL";
+    }
     const requestId = salaryRequestIdRef.current + 1;
     salaryRequestIdRef.current = requestId;
 
@@ -646,7 +656,7 @@ export default function SwtDashboard() {
         series: asArray(salaryRes.data?.series),
         chartData: asArray(salaryRes.data?.chart_data),
         availableTins: asArray(salaryRes.data?.available_tins),
-        selectedTin: str(salaryRes.data?.selected_tin ?? nextTin, ""),
+        selectedTin: str(salaryRes.data?.selected_tin ?? nextTin, "ALL"),
       });
     } catch (err) {
       const message = getRequestErrorMessage(err);
@@ -962,26 +972,38 @@ export default function SwtDashboard() {
                       chartContent={<>
                         <div className="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
                           <Typography variant="body2" color="text.secondary">
-                            {swtSalaryChart.selectedTin
-                              ? `TIN: ${swtSalaryChart.selectedTin}`
-                              : "No TIN available"}
+                            {(() => {
+                              const currentItem = asArray(swtSalaryChart.availableTins).find(
+                                (item) => String(item.tin).toUpperCase() === String(swtSalaryChart.selectedTin || "").toUpperCase()
+                              );
+                              if (currentItem?.label) return `Filter: ${currentItem.label}`;
+                              return swtSalaryChart.selectedTin
+                                ? `Filter: ${swtSalaryChart.selectedTin}`
+                                : "Filter: ALL - All Taxpayers";
+                            })()}
                           </Typography>
-                          <FormControl size="small" style={{ minWidth: 220 }}>
-                            <InputLabel id="swt-salary-tin-label">TIN</InputLabel>
-                            <Select
-                              labelId="swt-salary-tin-label"
-                              value={swtSalaryChart.selectedTin || ""}
-                              label="TIN"
-                              onChange={handleSwtSalaryTinChange}
-                              disabled={!asArray(swtSalaryChart.availableTins).length || sectionLoading.sales}
-                            >
-                              {asArray(swtSalaryChart.availableTins).map((item) => (
-                                <MenuItem key={item.tin} value={item.tin}>
-                                  {item.label}
-                                </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
+                          <Autocomplete
+                            size="small"
+                            style={{ minWidth: 320 }}
+                            options={asArray(swtSalaryChart.availableTins)}
+                            value={
+                              asArray(swtSalaryChart.availableTins).find(
+                                (item) => String(item.tin).toUpperCase() === String(swtSalaryChart.selectedTin || "").toUpperCase()
+                              ) || (swtSalaryChart.selectedTin ? { tin: swtSalaryChart.selectedTin, label: swtSalaryChart.selectedTin } : null)
+                            }
+                            getOptionLabel={(option) => {
+                              if (typeof option === "string") return option;
+                              return option?.label || option?.tin || "";
+                            }}
+                            isOptionEqualToValue={(option, value) =>
+                              String(option?.tin).toUpperCase() === String(value?.tin).toUpperCase()
+                            }
+                            onChange={handleSwtSalaryTinChange}
+                            disabled={!asArray(swtSalaryChart.availableTins).length || sectionLoading.sales}
+                            renderInput={(params) => (
+                              <TextField {...params} size="small" label="TIN / Taxpayer" placeholder="Search TIN or Taxpayer..." />
+                            )}
+                          />
                         </div>
                         {asArray(swtSalaryChart.chartData).length ? (
                           <div
