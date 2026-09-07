@@ -328,7 +328,7 @@ export default function RiskAssessment() {
       categories: categoryChart.labels,
       labels: { rotate: -45 },
     },
-    title: { text: "Risk Breakdown by Category (Segment)" },
+    title: { text: "Risk Breakdown by Category (Taxpayer Type)" },
     colors: ["#3498DB", "#E74C3C"],
   };
 
@@ -854,7 +854,7 @@ export default function RiskAssessment() {
                 <div className="col-lg-6 col-md-12 mb-4 dashboard-card-col">
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
-                      <span>Risk Breakdown by Category (Segment)</span>
+                      <span>Risk Breakdown by Category (Taxpayer Type)</span>
                       <button className="btn btn-outline-primary btn-sm" onClick={() => toggleChartView("category")}>{chartView.category ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"

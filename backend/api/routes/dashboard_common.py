@@ -850,18 +850,76 @@ def fraud_consistency():
     rows = _summary_rows(f"SELECT tin, CASE WHEN MAX(fraud_flag) = 1 THEN 'Risk Flagged' ELSE 'Non-Risk Flagged' END AS predicted_fraud FROM {SUMMARY_TABLE} WHERE {where_clause} GROUP BY tin ORDER BY tin", params)
     return jsonify([dict(r) for r in rows])
 
+# @bp.get("/dropdown")
+# @jwt_required()
+# def taxpayer_dropdown():
+#     _ensure_summary_ready()
+#     search = (request.args.get("q") or "").strip()
+#     params = {}
+#     filters = ["1=1"]
+#     if search:
+#         params["search"] = f"%{search}%"
+#         filters.append("(tin LIKE :search OR taxpayer_name LIKE :search)")
+#     rows = _summary_rows(f"SELECT TRIM(tin) AS tin, MAX(COALESCE(NULLIF(TRIM(taxpayer_name), ''), 'Unknown')) AS name FROM {SUMMARY_TABLE} WHERE {' AND '.join(filters)} GROUP BY TRIM(tin) ORDER BY name, tin LIMIT 50", params)
+#     return jsonify([dict(r) for r in rows])
+
+# --------------------------------------------------------
+#   API 1: GET DISTINCT TIN
+# --------------------------------------------------------
+@bp.route("/dropdown", methods=["OPTIONS"])
+def taxpayer_dropdown_options():
+    return ("", 200)
+
+
 @bp.get("/dropdown")
 @jwt_required()
 def taxpayer_dropdown():
-    _ensure_summary_ready()
-    search = (request.args.get("q") or "").strip()
-    params = {}
-    filters = ["1=1"]
-    if search:
-        params["search"] = f"%{search}%"
-        filters.append("(tin LIKE :search OR taxpayer_name LIKE :search)")
-    rows = _summary_rows(f"SELECT TRIM(tin) AS tin, MAX(COALESCE(NULLIF(TRIM(taxpayer_name), ''), 'Unknown')) AS name FROM {SUMMARY_TABLE} WHERE {' AND '.join(filters)} GROUP BY TRIM(tin) ORDER BY name, tin LIMIT 50", params)
-    return jsonify([dict(r) for r in rows])
+    try:
+        search = (request.args.get("q") or "").strip()
+
+        params = {}
+        where = "WHERE trm.tin IS NOT NULL"
+        if search:
+            params["s"] = f"%{search}%"
+            where += """
+                AND (
+                    CAST(trm.tin AS CHAR(30)) LIKE :s
+                    OR trm.taxpayername LIKE :s
+                    OR trm.maintradename LIKE :s
+                )
+            """
+
+        query = f"""
+            SELECT
+                trm.tin AS tin,
+                COALESCE(
+                    NULLIF(TRIM(trm.taxpayername), ''),
+                    NULLIF(TRIM(trm.maintradename), ''),
+                    'Unknown'
+                ) AS taxpayer_name
+            FROM tin_registration_mst trm
+            {where}
+            ORDER BY taxpayer_name ASC
+            LIMIT 100
+        """
+
+        rows = db.session.execute(text(query), params).fetchall()
+        return jsonify(
+            [
+                {
+                    "value": r._mapping["tin"],
+                    "label": f'{r._mapping["tin"]} - {r._mapping["taxpayer_name"]}',
+                    "name": r._mapping["taxpayer_name"],
+                    "tin": r._mapping["tin"],
+                    "taxpayer_name": r._mapping["taxpayer_name"],
+                }
+                for r in rows
+                if r._mapping.get("tin") and r._mapping.get("taxpayer_name")
+            ]
+        ), 200
+    except Exception as e:
+        current_app.logger.exception(e)
+        return jsonify([]), 200
 
 @bp.get("/high-risk-tins")
 @jwt_required()
