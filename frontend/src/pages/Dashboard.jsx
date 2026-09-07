@@ -503,7 +503,12 @@ export default function Dashboard() {
       },
     },
     xaxis: { categories: segmentation.labels },
-    colors: ["#1E90FF", "#2ECC71", "#F1C40F", "#E67E22", "#9B59B6", "#E74C3C"],
+    colors: [({ dataPointIndex }) => ({
+      large: "#2563EB",
+      medium: "#14B8A6",
+      small: "#F59E0B",
+      unknown: "#94A3B8",
+    })[String(segmentation.labels[dataPointIndex] ?? "").trim().toLowerCase().replace(/\s+taxpayer$/, "")] ?? "#94A3B8"],
     title: {
       text: "Segmentation Distribution (by Count)",
       style: { color: "#333", fontWeight: "bold" },

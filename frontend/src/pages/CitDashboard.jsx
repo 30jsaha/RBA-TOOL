@@ -708,6 +708,12 @@ export default function CitDashboard() {
   ], []);
 
   const segmentationChartOptions = useMemo(() => ({
+    colors: segmentation.labels.map((label) => ({
+      large: "#2563EB",
+      medium: "#14B8A6",
+      small: "#F59E0B",
+      unknown: "#94A3B8",
+    })[String(label ?? "").trim().toLowerCase().replace(/\s+taxpayer$/, "")] ?? "#94A3B8"),
     chart: {
       toolbar: CHART_TOOLBAR,
     },

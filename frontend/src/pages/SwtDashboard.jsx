@@ -730,7 +730,12 @@ export default function SwtDashboard() {
     },
     dataLabels: { enabled: false },
     xaxis: { categories: segmentation.labels },
-    colors: ["#00A36C", "#007BFF", "#FF7F50", "#A66DD4", "#FFC300"],
+    colors: segmentation.labels.map((label) => ({
+      large: "#2563EB",
+      medium: "#14B8A6",
+      small: "#F59E0B",
+      unknown: "#94A3B8",
+    })[String(label ?? "").trim().toLowerCase().replace(/\s+taxpayer$/, "")] ?? "#94A3B8"),
   }), [segmentation.labels]);
 
   const filteredRecords = useMemo(() => asArray(latestRecords).filter((row) =>
