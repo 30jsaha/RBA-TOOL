@@ -507,6 +507,7 @@ export default function Dashboard() {
       large: "#2563EB",
       medium: "#14B8A6",
       small: "#F59E0B",
+      micro: "#8B5CF6",
       unknown: "#94A3B8",
     })[String(segmentation.labels[dataPointIndex] ?? "").trim().toLowerCase().replace(/\s+taxpayer$/, "")] ?? "#94A3B8"],
     title: {
