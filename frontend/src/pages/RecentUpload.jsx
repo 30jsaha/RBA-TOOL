@@ -1,6 +1,6 @@
 // src/pages/RecentUpload.jsx
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -31,74 +31,26 @@ export default function RecentUpload() {
 
   const [records, setRecords] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [searchText, setSearchText] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [category, setCategory] = useState("gst");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [userTouchedDate, setUserTouchedDate] = useState(false);
+  const [draftStartDate, setDraftStartDate] = useState("");
+  const [draftEndDate, setDraftEndDate] = useState("");
+  const [appliedStartDate, setAppliedStartDate] = useState("");
+  const [appliedEndDate, setAppliedEndDate] = useState("");
+  const [hasSubmitted, setHasSubmitted] = useState(false);
 
   const BASE_PATH = "/predicted-records/recent-uploads";
 
-  const deriveRangeFromRecords = (rows) => {
-    if (!rows || !rows.length) return null;
-
-    let latestYear = null;
-    let latestMonth = null;
-
-    rows.forEach((row) => {
-      const year = Number(row.tax_period_year);
-      const month = row.tax_period_month === null || row.tax_period_month === undefined
-        ? null
-        : Number(row.tax_period_month);
-
-      if (!Number.isFinite(year)) return;
-
-      if (latestYear === null) {
-        latestYear = year;
-        latestMonth = month;
-        return;
-      }
-
-      const compareMonth = month ?? 12;
-      const latestCompareMonth = latestMonth ?? 12;
-
-      if (year > latestYear || (year === latestYear && compareMonth > latestCompareMonth)) {
-        latestYear = year;
-        latestMonth = month;
-      }
-    });
-
-    if (latestYear === null) return null;
-
-    if (latestMonth === null || latestMonth === undefined) {
-      return {
-        start: `${latestYear}-01-01`,
-        end: `${latestYear}-12-31`,
-      };
-    }
-
-    const monthStr = String(latestMonth).padStart(2, "0");
-    const start = `${latestYear}-${monthStr}-01`;
-    const endDateObj = new Date(latestYear, latestMonth, 0);
-    const endMonthStr = String(latestMonth).padStart(2, "0");
-    const endDayStr = String(endDateObj.getDate()).padStart(2, "0");
-    return {
-      start,
-      end: `${latestYear}-${endMonthStr}-${endDayStr}`,
-    };
-  };
-
-  const fetchRecent = async () => {
+  const fetchRecent = async ({ startDate, endDate, search } = {}) => {
     setLoading(true);
     setError("");
 
     try {
       const params = {
         tax_type: category,
-        search: debouncedSearch || undefined,
+        search: search || undefined,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
       };
@@ -114,19 +66,6 @@ export default function RecentUpload() {
       );
       setTotalRecords(res.data.total_records || 0);
 
-      const range = res.data.date_range || {};
-      if (!userTouchedDate) {
-        if (range.start_date && range.end_date) {
-          setStartDate(range.start_date);
-          setEndDate(range.end_date);
-        } else {
-          const derived = deriveRangeFromRecords(rows);
-          if (derived?.start && derived?.end) {
-              setStartDate(derived.start);
-            setEndDate(derived.end);
-          }
-        }
-      }
     } catch (err) {
       setError(err.response?.data?.message || err.message);
       setRecords([]);
@@ -136,17 +75,31 @@ export default function RecentUpload() {
     }
   };
 
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setDebouncedSearch(searchText);
-    }, 400);
+  const isDateFilterDirty =
+    draftStartDate !== appliedStartDate || draftEndDate !== appliedEndDate;
 
-    return () => clearTimeout(handle);
-  }, [searchText]);
+  const handleSubmitDates = () => {
+    if (loading || !isDateFilterDirty) return;
 
-  useEffect(() => {
-    fetchRecent();
-  }, [category, startDate, endDate, debouncedSearch]);
+    if (
+      draftStartDate &&
+      draftEndDate &&
+      dayjs(draftEndDate).isBefore(dayjs(draftStartDate), "day")
+    ) {
+      setError("End date must be on or after the start date.");
+      return;
+    }
+
+    setError("");
+    setHasSubmitted(true);
+    setAppliedStartDate(draftStartDate);
+    setAppliedEndDate(draftEndDate);
+    fetchRecent({
+      startDate: draftStartDate,
+      endDate: draftEndDate,
+      search: searchText,
+    });
+  };
 
   const handleDownloadCSV = async () => {
     setError("");
@@ -155,9 +108,9 @@ export default function RecentUpload() {
       const csvUrl = "/upload-history/recent-uploads/download-csv";
       const params = {
         tax_type: category,
-        search: debouncedSearch || undefined,
-        start_date: startDate || undefined,
-        end_date: endDate || undefined,
+        search: searchText || undefined,
+        start_date: appliedStartDate || undefined,
+        end_date: appliedEndDate || undefined,
       };
       const response = await API.get(csvUrl, {
         params,
@@ -183,9 +136,17 @@ export default function RecentUpload() {
     }
   };
 
+  const filteredRecords = records.filter((row) => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) return true;
+
+    return [row.tin, row.taxpayer_name, row.tax_period_year]
+      .some((value) => String(value ?? "").toLowerCase().includes(query));
+  });
+
   const columns = [
-    { name: "TIN", selector: (row) => row.tin, sortable: true, width: "120px" },
-    { name: "Taxpayer Name", selector: (row) => row.taxpayer_name, sortable: true, wrap: true, grow: 1.5 },
+    { name: "TIN", selector: (row) => row.tin, sortable: true, width: "110px", minWidth: "100px", wrap: true },
+    { name: "Taxpayer Name", selector: (row) => row.taxpayer_name, sortable: true, wrap: true, width: "240px", minWidth: "220px", grow: 2 },
     {
       name: "Is Fraud",
       cell: (row) => {
@@ -197,18 +158,20 @@ export default function RecentUpload() {
         );
       },
       sortable: true,
-      width: "90px",
+      width: "115px",
+      minWidth: "110px",
+      wrap: true,
     },
-    { name: "Type", selector: (row) => row.taxpayer_type, sortable: true },
-    { name: "Tax Account No", selector: (row) => row.tax_account_number || "-", sortable: true },
-    { name: "Month", selector: (row) => row.tax_period_month ?? "-", sortable: true },
-    { name: "Year", selector: (row) => row.tax_period_year ?? "-", sortable: true },
+    { name: "Type", selector: (row) => row.taxpayer_type, sortable: true, width: "120px", minWidth: "120px", wrap: true },
+    { name: "Tax Account No", selector: (row) => row.tax_account_number || "-", sortable: true, width: "160px", minWidth: "150px", wrap: true },
+    { name: "Month", selector: (row) => row.tax_period_month ?? "-", sortable: true, width: "90px", minWidth: "90px", wrap: true },
+    { name: "Year", selector: (row) => row.tax_period_year ?? "-", sortable: true, width: "90px", minWidth: "90px", wrap: true },
   ];
 
   return (
-    <div className="row">
+    <div className="row" style={{ width: "100%", marginLeft: 0, marginRight: 0 }}>
       <Header toggleSidebar={() => setCollapsed(!collapsed)} />
-      <div className="col-lg-12 col-md-12">
+      <div className="col-lg-12 col-md-12" style={{ minWidth: 0, maxWidth: "100%" }}>
         <Sidebar
           collapsed={collapsed}
           setCollapsed={setCollapsed}
@@ -216,11 +179,11 @@ export default function RecentUpload() {
           setOpenMenu={setOpenMenu}
         />
 
-        <main className="main-content flex-grow-1 p-4 mt-5">
+        <main className="main-content flex-grow-1 p-4 mt-5" style={{ minWidth: 0, maxWidth: "100%" }}>
           <div className="container-fluid">
             <div className="header-title-page mb-3">Recent Uploads</div>
 
-            <Paper className="p-3">
+            <Paper className="p-3" sx={{ maxWidth: "100%", minWidth: 0 }}>
               {error && <Alert severity="error" className="mb-3">{error}</Alert>}
 
               <div className="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-3">
@@ -232,9 +195,10 @@ export default function RecentUpload() {
                       label="Category"
                       onChange={(e) => {
                         setCategory(e.target.value);
-                        setUserTouchedDate(false);
-                        setStartDate("");
-                        setEndDate("");
+                        setDraftStartDate("");
+                        setDraftEndDate("");
+                        setAppliedStartDate("");
+                        setAppliedEndDate("");
                       }}
                     >
                       <MenuItem value="all">All</MenuItem>
@@ -257,23 +221,19 @@ export default function RecentUpload() {
                     <DatePicker
                       label="Start Date"
                       format="DD/MM/YYYY"
-                      value={startDate ? dayjs(startDate) : null}
+                      value={draftStartDate ? dayjs(draftStartDate) : null}
                       onChange={(newValue) => {
                         if (!newValue || !newValue.isValid()) return;
 
                         const year = newValue.year();
                         if (year < 1900 || year > 2100) return;
 
-                        setStartDate(newValue.format("YYYY-MM-DD"));
-                        setUserTouchedDate(true);
+                        setDraftStartDate(newValue.format("YYYY-MM-DD"));
                       }}
                       slotProps={{
                         textField: {
                           fullWidth: true,
                           size: "small",
-                          inputProps: {
-                            readOnly: true
-                          }
                         }
                       }}
                     />
@@ -285,43 +245,53 @@ export default function RecentUpload() {
                     <DatePicker
                       label="End Date"
                       format="DD/MM/YYYY"
-                      value={endDate ? dayjs(endDate) : null}
+                      value={draftEndDate ? dayjs(draftEndDate) : null}
                       onChange={(newValue) => {
                         if (!newValue || !newValue.isValid()) return;
 
                         const year = newValue.year();
                         if (year < 1900 || year > 2100) return;
 
-                        setEndDate(newValue.format("YYYY-MM-DD"));
-                        setUserTouchedDate(true);
+                        setDraftEndDate(newValue.format("YYYY-MM-DD"));
                       }}
                       slotProps={{
                         textField: {
                           fullWidth: true,
                           size: "small",
-                          inputProps: {
-                            readOnly: true
-                          }
                         }
                       }}
                     />
                   </LocalizationProvider>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={handleSubmitDates}
+                    disabled={loading || !isDateFilterDirty}
+                  >
+                    Submit
+                  </Button>
                 </Box>
               </div>
 
               <div className="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-                <TextField
-                  size="small"
-                  placeholder="Search TIN / Company / Year..."
-                  variant="outlined"
-                  onChange={(e) => setSearchText(e.target.value)}
-                  value={searchText}
-                  style={{
-                    width: "260px",
-                    backgroundColor: "#fff",
-                    borderRadius: "6px",
-                  }}
-                />
+                <Box>
+                  <TextField
+                    size="small"
+                    placeholder="Search TIN / Company / Year..."
+                    variant="outlined"
+                    onChange={(e) => setSearchText(e.target.value)}
+                    value={searchText}
+                    style={{
+                      width: "260px",
+                      backgroundColor: "#fff",
+                      borderRadius: "6px",
+                    }}
+                  />
+                  <Alert severity="info" icon={false} sx={{ mt: 1, py: 0, px: 1.5, fontSize: "0.8rem" }}>
+                    Select the required date range and click Submit to apply the filter.
+                    {isDateFilterDirty ? " Pending changes." : ""}
+                  </Alert>
+                </Box>
 
                 <Button
                   variant="contained"
@@ -342,16 +312,21 @@ export default function RecentUpload() {
                   </Typography>
                 </Box>
               ) : (
-                <div className="table-container">
+                <div className="table-container" style={{ overflowX: "auto" }}>
                   <DataTable
                     columns={columns}
-                    data={records}
                     customStyles={tableCustomStyles}
                     pagination
                     highlightOnHover
                     striped
                     dense
-                    noDataComponent="There is no record to display"
+                    responsive
+                    data={filteredRecords}
+                    noDataComponent={
+                      hasSubmitted
+                        ? "No records available for the selected criteria"
+                        : "Please select a date range and click Submit."
+                    }
                   />
                 </div>
               )}
