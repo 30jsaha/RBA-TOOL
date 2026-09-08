@@ -278,16 +278,19 @@ def list_upload_history_with_user_roles():
         params["tax_type"] = tax_filter.lower()
 
     if search:
-        where.append("ul.filename LIKE :search")
+        where.append("(ul.filename LIKE :search OR uh.filename LIKE :search)")
         params["search"] = f"%{search}%"
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
-    # Fixed query with proper joins to users and user_roles tables
+    # Fixed query with proper joins to upload_history, users, and user_roles tables
     query = text(f"""
         SELECT
             ul.id AS upload_id,
-            ul.filename AS file_name,
+            COALESCE(uh.filename, ul.filename) AS file_name,
+            COALESCE(uh.row_count, ul.row_count, 0) AS row_count,
+            COALESCE(uh.file_size_kb, ul.file_size_kb, 0) AS file_size_kb,
+            ROUND(COALESCE(uh.file_size_kb, ul.file_size_kb, 0) / 1024.0, 2) AS file_size_mb,
             COALESCE(u.full_name, 'Unknown User') AS uploaded_by,
             COALESCE(r.name, 'No Role Assigned') AS role,
             UPPER(COALESCE(ul.tax_type, '')) AS tax_parameter,
@@ -304,6 +307,7 @@ def list_upload_history_with_user_roles():
             COALESCE(ul.error_message, '') AS fraud_reason,
             'Normal' AS risk_type
         FROM upload_log ul
+        LEFT JOIN upload_history uh ON (ul.upload_batch_id = uh.upload_batch_id OR ul.id = uh.id)
         LEFT JOIN users u ON ul.user_id = u.id
         LEFT JOIN user_roles ur ON u.id = ur.user_id
         LEFT JOIN roles r ON ur.role_id = r.id
@@ -324,21 +328,24 @@ def list_upload_history_with_user_roles():
         {
             "upload_id": r[0],
             "file_name": r[1],
-            "uploaded_by": r[2],
-            "role": r[3],
-            "tax_parameter": r[4],
-            "date": str(r[5]),
-            "time": str(r[6]),
-            "Tin": r[7],
-            "Taxpayer_Name": r[8],
-            "Type": r[9],
-            "Segmentation": r[10],
-            "Total_Sales": r[11],
-            "Gst_Payable": r[12],
-            "Gst_Refundable": r[13],
-            "Fraud": r[14],
-            "Fraud_Reason": r[15],
-            "Risk_Type": r[16],
+            "row_count": int(r[2]) if r[2] is not None else 0,
+            "file_size_kb": float(r[3]) if r[3] is not None else 0.0,
+            "file_size_mb": float(r[4]) if r[4] is not None else 0.0,
+            "uploaded_by": r[5],
+            "role": r[6],
+            "tax_parameter": r[7],
+            "date": str(r[8]),
+            "time": str(r[9]),
+            "Tin": r[10],
+            "Taxpayer_Name": r[11],
+            "Type": r[12],
+            "Segmentation": r[13],
+            "Total_Sales": r[14],
+            "Gst_Payable": r[15],
+            "Gst_Refundable": r[16],
+            "Fraud": r[17],
+            "Fraud_Reason": r[18],
+            "Risk_Type": r[19],
         }
         for r in rows
     ]

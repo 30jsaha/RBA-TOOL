@@ -284,7 +284,9 @@ def get_date_range():
 
 def _get_dashboard_tin():
     tin = (request.args.get("tin") or "").strip()
-    return tin or None
+    if not tin or tin.upper() == "ALL":
+        return None
+    return tin
 
 def _dashboard_request_metadata():
     return {"tin": _get_dashboard_tin(), "range_type": request.args.get("range_type", "1y"), "start_date": request.args.get("start_date") or request.args.get("from_date"), "end_date": request.args.get("end_date") or request.args.get("to_date")}

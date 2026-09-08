@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import Swal from "sweetalert2";
@@ -65,13 +65,15 @@ export default function CommonDashboard() {
   const [collapsed, setCollapsed] = useState(false);
   const [openMenu, setOpenMenu] = useState(null);
 
+  const ALL_TIN_OPTION = useMemo(() => ({ tin: "ALL", name: "All Taxpayers", label: "ALL - All Taxpayers" }), []);
+
   /* FILTERS */
   const [startDate, setStartDate] = useState(dayjs().startOf("year"));
   const [endDate, setEndDate] = useState(dayjs().endOf("year"));
 
-  const [tinList, setTinList] = useState([]);
-  const [selectedTin, setSelectedTin] = useState(null);
-  const [appliedFilters, setAppliedFilters] = useState(() => ({ startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), selectedTin: null }));
+  const [tinList, setTinList] = useState([ALL_TIN_OPTION]);
+  const [selectedTin, setSelectedTin] = useState(ALL_TIN_OPTION);
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), selectedTin: ALL_TIN_OPTION }));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [chartView, setChartView] = useState({ taxFlow: false, sector: false, fraudTrend: false, fraudDistribution: false });
   const [tinInputValue, setTinInputValue] = useState("");
@@ -123,7 +125,7 @@ export default function CommonDashboard() {
     range_type: "custom",
     start_date: filters.startDate.format("YYYY-MM-DD"),
     end_date: filters.endDate.format("YYYY-MM-DD"),
-    ...(filters.selectedTin?.tin && { tin: filters.selectedTin.tin }),
+    ...(filters.selectedTin?.tin && filters.selectedTin.tin !== "ALL" && { tin: filters.selectedTin.tin }),
   });
 
   const params = useMemo(() => buildParams(appliedFilters), [appliedFilters]);
@@ -413,12 +415,14 @@ export default function CommonDashboard() {
       if (!isMountedRef.current) {
         return;
       }
-      setTinList(
-        (res.data || []).map((row) => ({
-          label: `${row.tin} - ${row.name}`,
+      setTinList([
+        ALL_TIN_OPTION,
+        ...(res.data || []).map((row) => ({
+          label: row.label || `${row.tin} - ${row.name || row.taxpayer_name}`,
           tin: row.tin,
-        }))
-      );
+          name: row.name || row.taxpayer_name,
+        })),
+      ]);
     } catch (err) {
       console.error("Error fetching dropdown:", err);
     } finally {
@@ -426,7 +430,7 @@ export default function CommonDashboard() {
         setTinLoading(false);
       }
     }
-  }, []);
+  }, [ALL_TIN_OPTION]);
 
   const reloadDashboard = useCallback((requestParams = params) => {
     const fetchId = fetchSequenceRef.current + 1;
@@ -972,7 +976,7 @@ export default function CommonDashboard() {
                             isOptionEqualToValue={(option, value) =>
                               option?.tin === value?.tin
                             }
-                            onChange={(_, value) => setSelectedTin(value)}
+                            onChange={(_, value) => setSelectedTin(value || ALL_TIN_OPTION)}
                             onInputChange={(_, value) => setTinInputValue(value)}
                             renderInput={(params) => (
                               <TextField {...params} size="small" label="TIN / Taxpayer" />
