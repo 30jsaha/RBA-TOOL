@@ -145,8 +145,8 @@ export default function RecentUpload() {
   });
 
   const columns = [
-    { name: "TIN", selector: (row) => row.tin, sortable: true, width: "110px", minWidth: "100px", wrap: true },
-    { name: "Taxpayer Name", selector: (row) => row.taxpayer_name, sortable: true, wrap: true, width: "240px", minWidth: "220px", grow: 2 },
+    { name: "TIN", selector: (row) => row.tin, sortable: true, minWidth: "100px", grow: 0.8, wrap: true },
+    { name: "Taxpayer Name", selector: (row) => row.taxpayer_name, sortable: true, minWidth: "220px", grow: 2, wrap: true },
     {
       name: "Is Fraud",
       cell: (row) => {
@@ -158,18 +158,25 @@ export default function RecentUpload() {
         );
       },
       sortable: true,
-      width: "115px",
       minWidth: "110px",
+      grow: 1,
       wrap: true,
     },
-    { name: "Type", selector: (row) => row.taxpayer_type, sortable: true, width: "120px", minWidth: "120px", wrap: true },
-    { name: "Tax Account No", selector: (row) => row.tax_account_number || "-", sortable: true, width: "160px", minWidth: "150px", wrap: true },
-    { name: "Month", selector: (row) => row.tax_period_month ?? "-", sortable: true, width: "90px", minWidth: "90px", wrap: true },
-    { name: "Year", selector: (row) => row.tax_period_year ?? "-", sortable: true, width: "90px", minWidth: "90px", wrap: true },
+    { name: "Type", selector: (row) => row.taxpayer_type, sortable: true, minWidth: "120px", grow: 1, wrap: true },
+    { name: "Tax Account No", selector: (row) => row.tax_account_number || "-", sortable: true, minWidth: "150px", grow: 1, wrap: true },
+    { name: "Month", selector: (row) => row.tax_period_month ?? "-", sortable: true, minWidth: "90px", grow: 0.8, wrap: true },
+    { name: "Year", selector: (row) => row.tax_period_year ?? "-", sortable: true, minWidth: "90px", grow: 0.8, wrap: true },
   ];
 
   return (
-    <div className="row" style={{ width: "100%", marginLeft: 0, marginRight: 0 }}>
+    <div className="row recent-uploads-page" style={{ width: "100%", marginLeft: 0, marginRight: 0 }}>
+      <style>{`
+        .recent-uploads-page > .header {
+          width: 100%;
+          max-width: 100%;
+          box-sizing: border-box;
+        }
+      `}</style>
       <Header toggleSidebar={() => setCollapsed(!collapsed)} />
       <div className="col-lg-12 col-md-12" style={{ minWidth: 0, maxWidth: "100%" }}>
         <Sidebar
@@ -315,7 +322,10 @@ export default function RecentUpload() {
                 <div className="table-container" style={{ overflowX: "auto" }}>
                   <DataTable
                     columns={columns}
-                    customStyles={tableCustomStyles}
+                    customStyles={{
+                      ...tableCustomStyles,
+                      table: { style: { width: "100%" } },
+                    }}
                     pagination
                     highlightOnHover
                     striped
