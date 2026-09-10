@@ -348,7 +348,9 @@ export default function TaxpayerProfile() {
     {
       name: "Fraud Reason",
       cell: (row) => {
-        const hasFraudReason = row.fraud_reason && (taxType !== "gst" || isPredictedFraud(row));
+        const hasFraudReason = (taxType === "gst" || taxType === "swt")
+          ? (taxType === "gst" ? isPredictedFraud(row) : Number(row?.is_fraud) === 1)
+          : row.fraud_reason;
         return hasFraudReason ? (
           <Button
             className="badge bg-danger"
