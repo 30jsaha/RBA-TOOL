@@ -316,6 +316,22 @@ export default function RiskAssessment() {
     }
   };
 
+  const handleAnomalyFilterChange = (name, value) => {
+    const nextFilters = {
+      ...appliedFilters,
+      anomalyYear: name === "year" ? value : anomalyYear,
+      anomalyMonth: name === "month" ? value : anomalyMonth,
+    };
+
+    if (name === "year") {
+      setAnomalyYear(value);
+    } else {
+      setAnomalyMonth(value);
+    }
+
+    fetchAnomalyChart(nextFilters);
+  };
+
   const categoryOptions = {
     chart: { type: "bar", toolbar: { show: false } },
     plotOptions: { bar: { borderRadius: 6, dataLabels: { position: "top" } } },
@@ -630,7 +646,7 @@ export default function RiskAssessment() {
   const handleDownloadAnomaliesCSV = async () => {
     try {
       const res = await API.get("/risk-assessment/download-frequency-anomalies", {
-        params: getParams(),
+        params: getAnomalyParams({ ...appliedFilters, anomalyYear, anomalyMonth }),
       });
 
       const rows = res.data?.rows || [];
@@ -979,7 +995,7 @@ export default function RiskAssessment() {
                               labelId="anomaly-year-label"
                               label="Select Year"
                               value={anomalyYear}
-                              onChange={(e) => setAnomalyYear(e.target.value)}
+                              onChange={(e) => handleAnomalyFilterChange("year", e.target.value)}
                             >
                               <MenuItem value="">Any</MenuItem>
                               {anomalyFilterOptions.years.map((year) => (
@@ -998,7 +1014,7 @@ export default function RiskAssessment() {
                               labelId="anomaly-year-label"
                               label="Select Year"
                               value={anomalyYear}
-                              onChange={(e) => setAnomalyYear(e.target.value)}
+                              onChange={(e) => handleAnomalyFilterChange("year", e.target.value)}
                             >
                               <MenuItem value="">Any</MenuItem>
                               {anomalyFilterOptions.years.map((year) => (
@@ -1015,7 +1031,7 @@ export default function RiskAssessment() {
                               labelId="anomaly-month-label"
                               label="Select Month"
                               value={anomalyMonth}
-                              onChange={(e) => setAnomalyMonth(e.target.value)}
+                              onChange={(e) => handleAnomalyFilterChange("month", e.target.value)}
                             >
                               <MenuItem value="">Any</MenuItem>
                               {anomalyFilterOptions.months.map((month) => (

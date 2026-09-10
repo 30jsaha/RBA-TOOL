@@ -848,8 +848,10 @@ def frequency_of_risk_anomalies():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({
-        "labels": labels,
-        "values": [int(row.anomaly_1_count or 0), int(row.anomaly_2_count or 0)],
+        "labels": labels if row.anomaly_1_count is not None or row.anomaly_2_count is not None else [],
+        "values": [int(row.anomaly_1_count or 0), int(row.anomaly_2_count or 0)]
+        if row.anomaly_1_count is not None or row.anomaly_2_count is not None
+        else [],
     })
 
 
@@ -1139,9 +1141,25 @@ def download_taxpayer_vs_risk():
 def download_frequency_anomalies():
     taxtype = get_requested_taxtype("")
     start_year, start_month, end_year, end_month = get_date_range(taxtype)
+    filters = {
+        "year": (request.args.get("year") or "").strip(),
+        "month": (request.args.get("month") or "").strip(),
+    }
+    params = {
+        "start_year": start_year, "start_month": start_month,
+        "end_year": end_year, "end_month": end_month
+    }
 
     if taxtype == "gst":
-        query = text("""
+        where_clauses = ["(pr.tax_period_year > :start_year OR (pr.tax_period_year = :start_year AND pr.tax_period_month >= :start_month))", "(pr.tax_period_year < :end_year OR (pr.tax_period_year = :end_year AND pr.tax_period_month <= :end_month))"]
+        if filters["year"]:
+            where_clauses.append("pr.tax_period_year = :filter_year")
+            params["filter_year"] = int(filters["year"])
+        if filters["month"]:
+            where_clauses.append("pr.tax_period_month = :filter_month")
+            params["filter_month"] = int(filters["month"])
+        where_clauses.append("(pr.exempt_sales > pr.total_sales_income * 0.5 OR pr.gst_payable < pr.total_sales_income * 0.01)")
+        query = text(f"""
             SELECT 
                 CAST(pr.tin AS CHAR(30)) AS tin,
                 pr.taxpayer_name,
@@ -1153,17 +1171,18 @@ def download_frequency_anomalies():
                 CASE WHEN pr.exempt_sales > pr.total_sales_income * 0.5 THEN 1 ELSE 0 END AS excessive_exempt_sales_flag,
                 CASE WHEN pr.gst_payable < pr.total_sales_income * 0.01 THEN 1 ELSE 0 END AS suspiciously_low_output_flag
             FROM gst_fraud_justification pr
-            WHERE (pr.tax_period_year > :start_year 
-                OR (pr.tax_period_year = :start_year AND pr.tax_period_month >= :start_month))
-              AND (pr.tax_period_year < :end_year 
-                OR (pr.tax_period_year = :end_year AND pr.tax_period_month <= :end_month))
-              AND (
-                    pr.exempt_sales > pr.total_sales_income * 0.5
-                    OR pr.gst_payable < pr.total_sales_income * 0.01
-              );
+            WHERE {' AND '.join(where_clauses)};
         """)
     elif taxtype == "swt":
-        query = text("""
+        where_clauses = ["(pr.tax_period_year > :start_year OR (pr.tax_period_year = :start_year AND pr.tax_period_month >= :start_month))", "(pr.tax_period_year < :end_year OR (pr.tax_period_year = :end_year AND pr.tax_period_month <= :end_month))"]
+        if filters["year"]:
+            where_clauses.append("pr.tax_period_year = :filter_year")
+            params["filter_year"] = int(filters["year"])
+        if filters["month"]:
+            where_clauses.append("pr.tax_period_month = :filter_month")
+            params["filter_month"] = int(filters["month"])
+        where_clauses.append("(pr.employees_paid_swt > pr.employees_on_payroll OR pr.total_swt_tax_deducted > pr.total_salary_wages_paid * 0.40)")
+        query = text(f"""
             SELECT 
                 CAST(pr.tin AS CHAR(30)) AS tin,
                 pr.taxpayer_name,
@@ -1176,17 +1195,14 @@ def download_frequency_anomalies():
                 CASE WHEN pr.employees_paid_swt > pr.employees_on_payroll THEN 1 ELSE 0 END AS ghost_employee_flag,
                 CASE WHEN pr.total_swt_tax_deducted > pr.total_salary_wages_paid * 0.40 THEN 1 ELSE 0 END AS excessive_tax_flag
             FROM swt_fraud_justification pr
-            WHERE (pr.tax_period_year > :start_year 
-                OR (pr.tax_period_year = :start_year AND pr.tax_period_month >= :start_month))
-              AND (pr.tax_period_year < :end_year 
-                OR (pr.tax_period_year = :end_year AND pr.tax_period_month <= :end_month))
-              AND (
-                    pr.employees_paid_swt > pr.employees_on_payroll
-                    OR pr.total_swt_tax_deducted > pr.total_salary_wages_paid * 0.40
-              );
+            WHERE {' AND '.join(where_clauses)};
         """)
     elif taxtype == "cit":
-        query = text("""
+        where_clauses = ["pr.tax_period_year >= :start_year", "pr.tax_period_year <= :end_year"]
+        if filters["year"]:
+            where_clauses.append("pr.tax_period_year = :filter_year")
+            params["filter_year"] = int(filters["year"])
+        query = text(f"""
             SELECT 
                 CAST(pr.tin AS CHAR(30)) AS tin,
                 pr.taxpayer AS taxpayer_name,
@@ -1199,17 +1215,12 @@ def download_frequency_anomalies():
                     COLLATE utf8mb4_unicode_ci
                 ) = 'fraud' THEN 1 ELSE 0 END AS fraud_flag
             FROM cit_fraud_justification pr
-            WHERE pr.tax_period_year >= :start_year
-              AND pr.tax_period_year <= :end_year
+            WHERE {' AND '.join(where_clauses)}
         """)
         
     else:
         return jsonify({"error": "Invalid taxtype"}), 400
 
-    params = {
-        "start_year": start_year, "start_month": start_month,
-        "end_year": end_year, "end_month": end_month
-    }
     rows = execute_stream_mappings(query, params)
 
     formatted = [
