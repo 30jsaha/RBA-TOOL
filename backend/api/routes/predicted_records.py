@@ -551,20 +551,41 @@ def taxpayer_fraud_reasons():
         return jsonify({"status": "error", "message": "TIN is required", "records": []}), 400
 
     params["tin"] = tin
-    base_query = _taxpayer_profile_base_query(taxtype)
-    sql = text(f"""
-        SELECT
-            tin,
-            tax_period_year AS year,
-            tax_period_month AS month,
-            fraud_reason
-        FROM (
-            {base_query}
-        ) x
-        WHERE tin = :tin
-          AND COALESCE(NULLIF(TRIM(fraud_reason), ''), '') <> ''
-        ORDER BY tax_period_year DESC, COALESCE(tax_period_month, 12) DESC, tin ASC
-    """)
+    if taxtype in ("gst", "swt"):
+        table_name = f"{taxtype}_fraud_justification"
+        fraud_filter = (
+            "AND LOWER(TRIM(COALESCE(pr.predicted_fraud, ''))) = 'fraud' "
+            "AND COALESCE(NULLIF(TRIM(pr.explanation), ''), '') <> ''"
+            if taxtype == "gst"
+            else ""
+        )
+        sql = text(f"""
+            SELECT
+                CAST(pr.tin AS CHAR(30)) AS tin,
+                pr.tax_period_year AS year,
+                pr.tax_period_month AS month,
+                COALESCE(NULLIF(TRIM(pr.explanation), ''), '') AS fraud_reason
+            FROM {table_name} pr
+            WHERE CAST(pr.tin AS CHAR(30)) = :tin
+              AND ((pr.tax_period_year * 100) + pr.tax_period_month) BETWEEN :start_ym AND :end_ym
+              {fraud_filter}
+            ORDER BY pr.tax_period_year ASC, COALESCE(pr.tax_period_month, 12) ASC, pr.tin ASC
+        """)
+    else:
+        base_query = _taxpayer_profile_base_query(taxtype)
+        sql = text(f"""
+            SELECT
+                tin,
+                tax_period_year AS year,
+                tax_period_month AS month,
+                fraud_reason
+            FROM (
+                {base_query}
+            ) x
+            WHERE tin = :tin
+              AND COALESCE(NULLIF(TRIM(fraud_reason), ''), '') <> ''
+            ORDER BY tax_period_year DESC, COALESCE(tax_period_month, 12) DESC, tin ASC
+        """)
 
     try:
         rows = db.session.execute(sql, params).mappings().all()
