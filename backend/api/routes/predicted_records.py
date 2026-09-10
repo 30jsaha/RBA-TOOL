@@ -139,6 +139,7 @@ def _taxpayer_profile_base_query(taxtype):
                 COALESCE(NULLIF(TRIM(pr.taxpayer_name), ''), 'Unknown') AS taxpayer_name,
                 'Normal' AS risk_type,
                 COALESCE(pr.is_fraud, 0) AS is_fraud,
+                pr.predicted_fraud AS predicted_fraud,
                 CASE
                     WHEN COALESCE(pr.is_fraud, 0) = 1 THEN 1 ELSE 0
                 END AS flagged,

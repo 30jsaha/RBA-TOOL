@@ -19,12 +19,16 @@ import {
   IconButton,
   Box,
   Typography,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import API from "../api/api";
 import dayjs from "dayjs";
@@ -135,7 +139,6 @@ export default function TaxpayerReportRiskProfiling() {
         tin: selectedTin.tin,
         range_type: appliedFilters.tenure,
         taxtype: appliedFilters.taxType,
-        debug: 1,
       };
       if (appliedFilters.tenure === "custom") {
         const startOk = startDate && typeof startDate.format === "function" && startDate.isValid?.();
@@ -146,6 +149,9 @@ export default function TaxpayerReportRiskProfiling() {
         }
       }
       const res = await API.get(`${BASE_PATH}/taxpayer-summary`, { params });
+      // Refresh the modal from the normal summary response. The debug-only
+      // response intentionally contains structured_report only.
+      setSummary(res.data);
       setRiskDebug(res.data?.debug || null);
     } catch {
       setRiskDebug(null);
@@ -158,21 +164,30 @@ export default function TaxpayerReportRiskProfiling() {
   };
 
   const getRiskExplanation = () => {
-    const riskKey =
-      riskType === "CIT"
-        ? "CIT Risk Identified"
-        : riskType === "GST"
-        ? "GST Risk Identified"
-        : riskType === "SWT"
-        ? "SWT Risk Identified"
-        : "Other Risk Identified";
+    const riskKey = `${riskType || ""} Risk Identified`;
 
     const riskValue = formatValue(structuredMap[riskKey]);
 
     const reasons = [];
     const metrics = [];
+    const gstFraudRecords = [];
+    const evidenceItems = [];
 
     if (riskType === "GST") {
+      const fraudRecords = Array.isArray(summary?.gst?.fraud_records)
+        ? summary.gst.fraud_records
+        : [];
+      fraudRecords.forEach((record) => {
+        if (String(record?.predicted_fraud ?? "").trim().toLowerCase() === "fraud") {
+          gstFraudRecords.push(record);
+        }
+      });
+      gstFraudRecords.forEach((record) => {
+        evidenceItems.push({
+          title: `${record.year ?? "Unknown year"} - Month ${record.month ?? "Unknown"} - ${record.predicted_fraud}`,
+          detail: record.fraud_reason || "No fraud reason supplied by the API.",
+        });
+      });
       const fraudCases = summary?.gst?.fraud_summary?.total_fraud_cases;
       const fraudPct = summary?.gst?.fraud_summary?.fraud_percentage;
       if (fraudCases !== undefined && fraudCases !== null) {
@@ -190,6 +205,12 @@ export default function TaxpayerReportRiskProfiling() {
     }
 
     if (riskType === "SWT") {
+      const swtReasons = summary?.swt?.fraud_metrics?.fraud_patterns?.swt_reasons;
+      if (Array.isArray(swtReasons)) {
+        swtReasons.filter(Boolean).forEach((reason) => {
+          evidenceItems.push({ title: "SWT evidence", detail: reason });
+        });
+      }
       const fraudCases = summary?.swt?.fraud_metrics?.total_fraud_cases;
       if (fraudCases !== undefined && fraudCases !== null) {
         reasons.push(`Payroll anomalies flagged: ${fraudCases}`);
@@ -202,6 +223,25 @@ export default function TaxpayerReportRiskProfiling() {
     }
 
     if (riskType === "CIT") {
+      const citRecords = Array.isArray(summary?.cit?.fraud_records)
+        ? summary.cit.fraud_records
+        : [];
+      const seenJustifications = new Set();
+      citRecords.forEach((record) => {
+        const justification = String(record?.justification ?? "").trim();
+        const key = `${record?.year ?? ""}|${justification}`;
+        if (
+          String(record?.predicted_fraud ?? "").trim().toLowerCase() === "fraud" &&
+          justification &&
+          !seenJustifications.has(key)
+        ) {
+          seenJustifications.add(key);
+          evidenceItems.push({
+            title: `CIT ${record.year ?? "evidence"}`,
+            detail: justification,
+          });
+        }
+      });
       const citBal = structuredMap["CIT Account Balance"];
       if (citBal !== undefined) {
         metrics.push({ label: "Account Balance", value: formatValue(citBal) });
@@ -214,20 +254,16 @@ export default function TaxpayerReportRiskProfiling() {
         reasons.push(`ML join coverage: ${riskDebug.cit_join_coverage_pct}%`);
         metrics.push({ label: "ML Join Coverage", value: `${riskDebug.cit_join_coverage_pct}%` });
       }
-    }
-
-    if (riskType === "Other") {
-      if (riskDebug?.gst_balance_mismatch_pct !== undefined) {
-        reasons.push(`GST balance mismatch: ${riskDebug.gst_balance_mismatch_pct}%`);
-        metrics.push({ label: "GST Mismatch %", value: `${riskDebug.gst_balance_mismatch_pct}%` });
+      if (metrics.length > 0 && reasons.length === 0) {
+        reasons.push("Available CIT risk metrics are shown below.");
       }
     }
 
     if (reasons.length === 0) {
-      reasons.push("No evidence data available from API for this risk.");
+      reasons.push("No risk evidence available for this tax type.");
     }
 
-    return { riskValue, reasons, metrics };
+    return { riskValue, reasons, metrics, gstFraudRecords, evidenceItems };
   };
 
   // Fetch TIN dropdown list
@@ -477,6 +513,8 @@ export default function TaxpayerReportRiskProfiling() {
                     
                     <TableBody>
                       {(summary?.structured_report || []).map((row, idx) => {
+                        if (row.label === "Other Risk Identified") return null;
+
                         const isSection =
                           sectionLabels.has(row.label) &&
                           (row.value === "" || row.value === null || row.value === undefined);
@@ -494,7 +532,6 @@ export default function TaxpayerReportRiskProfiling() {
                           "CIT Risk Identified",
                           "GST Risk Identified",
                           "SWT Risk Identified",
-                          "Other Risk Identified",
                         ].includes(row.label);
 
                         return (
@@ -516,7 +553,7 @@ export default function TaxpayerReportRiskProfiling() {
                                           ? "GST"
                                           : row.label.startsWith("SWT")
                                           ? "SWT"
-                                          : "Other"
+                                          : null
                                       )
                                     }
                                   >
@@ -562,7 +599,7 @@ export default function TaxpayerReportRiskProfiling() {
         </DialogTitle>
         <DialogContent dividers style={{ maxHeight: 500 }}>
           {(() => {
-            const { riskValue, reasons, metrics } = getRiskExplanation();
+            const { riskValue, reasons, metrics, evidenceItems } = getRiskExplanation();
             return (
               <Box>
                 <Typography variant="h6" gutterBottom>
@@ -579,6 +616,27 @@ export default function TaxpayerReportRiskProfiling() {
                     </li>
                   ))}
                 </ul>
+
+                {riskType !== "GST" && evidenceItems.length > 0 && (
+                  <>
+                    <Typography variant="subtitle1" gutterBottom>
+                      {riskType === "GST" ? "GST Fraud Details" : "Risk Evidence"}
+                    </Typography>
+                    {evidenceItems.map((item, index) => (
+                      <Accordion key={`${item.title}-${index}`} disableGutters>
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                          <Typography fontWeight={600}>{item.title}</Typography>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                            {riskType === "GST" && <strong>Fraud Reason: </strong>}
+                            {item.detail}
+                          </Typography>
+                        </AccordionDetails>
+                      </Accordion>
+                    ))}
+                  </>
+                )}
 
                 <Typography variant="subtitle1" gutterBottom>
                   Data Evidence
