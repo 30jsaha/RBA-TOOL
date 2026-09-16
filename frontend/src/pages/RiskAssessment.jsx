@@ -93,7 +93,7 @@ export default function RiskAssessment() {
   const [industryLoading, setIndustryLoading] = useState(false);
   const [riskDataLoading, setRiskDataLoading] = useState(false);
   const [anomalyLoading, setAnomalyLoading] = useState(false);
-  const [selectedSector, setSelectedSector] = useState("");
+  const [selectedSector, setSelectedSector] = useState("ALL");
   const [searchText, setSearchText] = useState("");
 
   const [categoryChart, setCategoryChart] = useState({
@@ -222,8 +222,8 @@ export default function RiskAssessment() {
       const industries = res.data || [];
       const labels = industries.map((d) => d.sector);
 
-      if (!selectedSector && labels.length > 0) {
-        setSelectedSector(labels[0]);
+      if (!selectedSector) {
+        setSelectedSector("ALL");
       }
 
       setIndustryChart({ labels, data: industries });
@@ -348,13 +348,29 @@ export default function RiskAssessment() {
     colors: ["#3498DB", "#E74C3C"],
   };
 
-  const selectedIndustry = industryChart.data.find(
-    (s) => s.sector === selectedSector
-  );
+  const selectedIndustry = useMemo(() => {
+    if (!selectedSector || selectedSector === "ALL") {
+      const total_taxpayers = industryChart.data.reduce(
+        (sum, item) => sum + (Number(item.total_taxpayers) || 0),
+        0
+      );
+      const risk_flagged = industryChart.data.reduce(
+        (sum, item) => sum + (Number(item.risk_flagged) || 0),
+        0
+      );
+      return {
+        sector: "ALL",
+        total_taxpayers,
+        risk_flagged,
+      };
+    }
+    return industryChart.data.find((s) => s.sector === selectedSector);
+  }, [selectedSector, industryChart.data]);
+
   const industrySeries = selectedIndustry
     ? [
         {
-          name: selectedSector,
+          name: selectedIndustry.sector === "ALL" ? "ALL Sectors" : selectedIndustry.sector,
           data: [
             selectedIndustry.total_taxpayers || 0,
             selectedIndustry.risk_flagged || 0,
@@ -367,7 +383,7 @@ export default function RiskAssessment() {
     chart: { type: "bar", toolbar: { show: false } },
     xaxis: { categories: ["Total Taxpayers", "Risk Flagged"] },
     dataLabels: { enabled: true },
-    title: { text: `Sector Risk - ${selectedSector || "-"}` },
+    title: { text: `Sector Risk - ${selectedIndustry?.sector || "ALL"}` },
     colors: ["#2ECC71", "#E74C3C"],
   };
 
@@ -605,7 +621,12 @@ export default function RiskAssessment() {
       });
 
       const rows = res.data?.rows || [];
-      const csvData = rows.map((r) => ({
+      const filteredRows =
+        selectedSector && selectedSector !== "ALL"
+          ? rows.filter((r) => r.sector === selectedSector)
+          : rows;
+
+      const csvData = filteredRows.map((r) => ({
         tin: normalizeTin(r),
         taxpayer_name: normalizeTaxpayerName(r),
         sector: r.sector,
@@ -916,9 +937,10 @@ export default function RiskAssessment() {
                           <Select
                             labelId="sector-label"
                             label="Select Sector"
-                            value={selectedSector}
+                            value={selectedSector || "ALL"}
                             onChange={(e) => setSelectedSector(e.target.value)}
                           >
+                            <MenuItem value="ALL">ALL</MenuItem>
                             {industryChart.labels.map((sector, i) => (
                               <MenuItem key={i} value={sector}>
                                 {sector}

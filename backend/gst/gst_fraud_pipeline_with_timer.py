@@ -708,5 +708,3 @@ class GSTAnalysis:
 if __name__ == "__main__":
     analyzer = GSTAnalysis()
     analyzer.run_complete_pipeline()
-
-
