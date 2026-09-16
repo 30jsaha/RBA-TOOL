@@ -27,6 +27,11 @@ def _get_db_settings():
     }
 
 
+def get_mysql_settings():
+    """Return the trusted server-side MySQL settings for maintenance tools."""
+    return _get_db_settings()
+
+
 # def _build_mysql_url(settings):
 #     if settings["password"] == "":
 #         return (

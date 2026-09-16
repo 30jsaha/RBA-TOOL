@@ -24,6 +24,7 @@ import AuditLogs from "./pages/AuditLogs";
 import DataChangeApproval from "./pages/DataChangeApproval";
 import HelpCenter from "./pages/HelpCenter";
 import ResetDB from "./pages/ResetDB";
+import DatabaseRestorePoint from "./pages/DatabaseRestorePoint";
 
 function App() {
   return (
@@ -222,6 +223,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+      <Route path="/settings/db-restore-point" element={<ProtectedRoute permission="settings.db_restore_point.view"><DatabaseRestorePoint /></ProtectedRoute>} />
 
       <Route path="*" element={<Login />} />
     </Routes>

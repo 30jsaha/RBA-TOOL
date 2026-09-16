@@ -14,6 +14,7 @@ PATH_PERMISSION_RULES = [
     ("/api/admin/conflicts/", ("settings.conflicts.list",)),
     ("/api/admin/reset-db", ("settings.reset_db",)),
     ("/api/admin/cleanup-temp-files", ("settings.reset_db",)),
+    ("/api/database-backup", ("settings.db_restore_point.view",)),
     ("/api/users", ("settings.users",)),
     ("/api/invalid-tins", ("settings.invalid_tins",)),
     ("/api/tin/sync-missing", ("upload_tin_registration",)),

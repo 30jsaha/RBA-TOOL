@@ -72,6 +72,7 @@ export default function Sidebar() {
       { label: "Permissions", path: "/settings/role-permissions", permission: "settings.role_permissions" },
       { label: "Invalid TINs", path: "/settings/invalid-tins", permission: "settings.invalid_tins" },
       { label: "Reset DB", path: "/settings/reset-db", permission: "settings.reset_db" },
+      { label: "DB Restore Point", path: "/settings/db-restore-point", permission: "settings.db_restore_point.view" },
     ].filter((item) => Array.isArray(item.permission) ? canAccessAll(item.permission) : canAccess(item.permission)),
     [permissionSignature]
   );

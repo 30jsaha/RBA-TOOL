@@ -114,6 +114,7 @@ from api.routes.predicted_records import bp as predicted_records_bp
 from api.routes.taxpayer_report_risk_profiling import bp as taxpayer_report_risk_profiling_bp
 from api.routes.upload_history import bp as upload_history_bp
 from api.routes.admin import bp as admin_bp
+from api.routes.database_backup import bp as database_backup_bp
 from api.routes.user_management import bp as user_management_bp
 from api.routes.role_management import bp as role_management_bp
 from api.routes.conflicts_api import bp as conflicts_admin_bp
@@ -164,6 +165,7 @@ app.register_blueprint(role_management_bp)
 app.register_blueprint(conflicts_admin_bp)
 app.register_blueprint(tin_master_bp)
 app.register_blueprint(admin_bp, url_prefix="/api/admin")
+app.register_blueprint(database_backup_bp)
 
 # â”€â”€ Serve static outputs (CORS Preflight target)
 @app.route('/outputs/<path:filename>', methods=['GET'])

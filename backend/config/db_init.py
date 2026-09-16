@@ -622,6 +622,41 @@ DDL_STATEMENTS = {
                 ON DELETE CASCADE
         )
     """,
+
+    "database_backup_history": """
+        CREATE TABLE IF NOT EXISTS database_backup_history (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            backup_name VARCHAR(255) NOT NULL UNIQUE,
+            backup_type VARCHAR(30) NOT NULL,
+            database_name VARCHAR(128) NULL,
+            backup_scope VARCHAR(20) NULL,
+            table_list TEXT NULL,
+            status VARCHAR(20) NOT NULL,
+            file_size BIGINT NULL,
+            checksum CHAR(64) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME NULL,
+            duration DECIMAL(12,3) NULL,
+            created_by BIGINT NULL,
+            error_message VARCHAR(500) NULL,
+            KEY idx_backup_history_status_created (status, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
+    "database_backup_audit": """
+        CREATE TABLE IF NOT EXISTS database_backup_audit (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id BIGINT NULL,
+            action VARCHAR(50) NOT NULL,
+            backup_id BIGINT NULL,
+            status VARCHAR(20) NOT NULL,
+            duration DECIMAL(12,3) NULL,
+            error_message VARCHAR(500) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_backup_audit_created (created_at),
+            KEY idx_backup_audit_backup (backup_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 }
 
 
@@ -644,6 +679,10 @@ PERMISSION_SEED = [
     {"code": "settings.users", "name": "Users", "description": "User management", "parent_code": "settings", "sort_order": 61},
     {"code": "settings.invalid_tins", "name": "Invalid Tins", "description": "Invalid TIN management", "parent_code": "settings", "sort_order": 62},
     {"code": "settings.reset_db", "name": "Reset DB", "description": "Database reset", "parent_code": "settings", "sort_order": 63},
+    {"code": "settings.db_restore_point", "name": "DB Restore Point", "description": "Database backup and restore points", "parent_code": "settings", "sort_order": 64},
+    {"code": "settings.db_restore_point.view", "name": "View Backups", "description": "View and download database backups", "parent_code": "settings.db_restore_point", "sort_order": 65},
+    {"code": "settings.db_restore_point.create", "name": "Create Backup", "description": "Create full database backups", "parent_code": "settings.db_restore_point", "sort_order": 66},
+    {"code": "settings.db_restore_point.restore", "name": "Restore Database", "description": "Restore the database from a backup", "parent_code": "settings.db_restore_point", "sort_order": 67},
     {"code": "settings.conflicts", "name": "Conflicts", "description": "Conflict management navigation", "parent_code": "settings", "sort_order": 64},
     {"code": "settings.conflicts.list", "name": "List", "description": "Conflicts list", "parent_code": "settings.conflicts", "sort_order": 65},
     {"code": "settings.conflicts.history", "name": "History", "description": "Conflicts history", "parent_code": "settings.conflicts", "sort_order": 66},
@@ -715,6 +754,17 @@ def _ensure_roles_table_supports_custom_names(conn):
 
     if column_type and str(column_type).lower().startswith("enum("):
         conn.execute(text("ALTER TABLE roles MODIFY COLUMN name VARCHAR(100) NOT NULL"))
+
+
+def _ensure_backup_history_columns(conn):
+    for name, definition in (("database_name", "VARCHAR(128) NULL"), ("backup_scope", "VARCHAR(20) NULL"), ("table_list", "TEXT NULL"), ("checksum", "CHAR(64) NULL")):
+        exists = conn.execute(text("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'database_backup_history'
+              AND COLUMN_NAME = :column_name
+        """), {"column_name": name}).scalar()
+        if not exists:
+            conn.execute(text(f"ALTER TABLE database_backup_history ADD COLUMN {name} {definition}"))
 
 
 def _ensure_tin_registration_mst_columns(conn):
@@ -846,6 +896,7 @@ def init_db():
                 print(f"  [DB Init] {table_name}")
 
             _ensure_roles_table_supports_custom_names(conn)
+            _ensure_backup_history_columns(conn)
             _ensure_tin_registration_mst_columns(conn)
             permission_ids = _seed_permissions(conn)
             _seed_role_permissions(conn, permission_ids)
