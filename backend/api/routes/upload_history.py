@@ -205,55 +205,6 @@ def list_upload_history():
 
 
 # ======================================================
-# GET /api/upload-history/<tax_parameter>
-# ======================================================
-@bp.get("/<string:tax_parameter>")
-@jwt_required()
-def list_uploads_by_type(tax_parameter):
-    """
-    List uploaded files by tax type: GST, SWT, CIT
-    """
-    params = {"tax_type": str(tax_parameter).upper()}
-    where = ["UPPER(COALESCE(upload_log.tax_type, '')) = :tax_type"]
-    _apply_upload_history_scope(where, params, table_alias="upload_log")
-    where_sql = "WHERE " + " AND ".join(where)
-
-    rows = db.session.execute(
-        text(
-            f"""
-            SELECT
-                id,
-                filename AS file_name,
-                UPPER(COALESCE(tax_type, '')) AS tax_parameter,
-                uploaded_at
-            FROM upload_log
-            {where_sql}
-            ORDER BY uploaded_at DESC
-            """
-        ),
-        params,
-    ).fetchall()
-    return jsonify(
-        [
-            {
-                "id": r.id,
-                "file_name": r.file_name,
-                "tax_parameter": r.tax_parameter,
-                "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
-            }
-            for r in rows
-        ]
-    ), 200
-
-
-# ======================================================
-# GET /api/upload-history/details
-# Supports:
-# /details?tax_type=gst|swt|cit|all
-# /details?page=1&limit=50
-# /details?search=filename
-# ======================================================
-# ======================================================
 # GET /api/upload-history/details
 # Supports:
 # /details?tax_type=gst|swt|cit|all
@@ -322,7 +273,14 @@ def list_upload_history_with_user_roles():
         return jsonify({"status": "error", "message": "Database query failed", "error": str(e)}), 500
 
     if not rows:
-        return jsonify({"status": "error", "message": "No data found"}), 404
+        return jsonify({
+            "status": "success",
+            "page": page,
+            "limit": limit,
+            "total_records": 0,
+            "total_pages": 0,
+            "records": []
+        }), 200
 
     data = [
         {
@@ -371,6 +329,48 @@ def list_upload_history_with_user_roles():
         "total_pages": total_pages,
         "records": data
     }), 200
+
+
+# ======================================================
+# GET /api/upload-history/<tax_parameter>
+# ======================================================
+@bp.get("/<string:tax_parameter>")
+@jwt_required()
+def list_uploads_by_type(tax_parameter):
+    """
+    List uploaded files by tax type: GST, SWT, CIT
+    """
+    params = {"tax_type": str(tax_parameter).upper()}
+    where = ["UPPER(COALESCE(upload_log.tax_type, '')) = :tax_type"]
+    _apply_upload_history_scope(where, params, table_alias="upload_log")
+    where_sql = "WHERE " + " AND ".join(where)
+
+    rows = db.session.execute(
+        text(
+            f"""
+            SELECT
+                id,
+                filename AS file_name,
+                UPPER(COALESCE(tax_type, '')) AS tax_parameter,
+                uploaded_at
+            FROM upload_log
+            {where_sql}
+            ORDER BY uploaded_at DESC
+            """
+        ),
+        params,
+    ).fetchall()
+    return jsonify(
+        [
+            {
+                "id": r.id,
+                "file_name": r.file_name,
+                "tax_parameter": r.tax_parameter,
+                "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
+            }
+            for r in rows
+        ]
+    ), 200
 
 
 def _upload_history_raw_folder(tax_type):
