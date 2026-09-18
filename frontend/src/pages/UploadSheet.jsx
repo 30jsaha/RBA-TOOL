@@ -4,7 +4,7 @@ import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Papa from "papaparse";
 import axios from "axios";
-import API from "../api/api";               //  NEW GLOBAL API IMPORT
+import API from "../api/api";
 import {
   LinearProgress,
   Box,
@@ -16,18 +16,30 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  DialogActions,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Skeleton,
+  IconButton,
+  Collapse,
 } from "@mui/material";
 import { FaCloudUploadAlt } from "react-icons/fa";
 import DataTable from "react-data-table-component";
 import "./css/UploadSheet.css";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import tableCustomStyles from "../components/common/tableStyles";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import DescriptionIcon from "@mui/icons-material/Description";
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import Swal from "sweetalert2";
 import API_BASE_URL, { SERVER_BASE_URL } from "../config/api.config";
 import { getToken } from "../services/auth";
@@ -82,6 +94,12 @@ const formatPipelineStatus = ({ status, step, insertedRows, totalRows, insertPer
 export default function UploadSheet() {
   const [collapsed, setCollapsed] = useState(false);
   const [openMenu, setOpenMenu] = useState(null);
+
+  // --- Page State Machine ---
+  // 'INITIAL' | 'FILE_SELECTED' | 'PREVIEW_LOADING' | 'PREVIEW_READY' | 'UPLOAD_VALIDATING' | 'UPLOAD_SUCCESS' | 'UPLOAD_ERROR'
+  const [pageState, setPageState] = useState("INITIAL");
+  const [isPreviewExpanded, setIsPreviewExpanded] = useState(true);
+
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [uploadResponse, setUploadResponse] = useState(null);
@@ -90,18 +108,28 @@ export default function UploadSheet() {
   const [pipelineState, setPipelineState] = useState(createInitialPipelineState);
   const [runId, setRunId] = useState(null);
   const terminalRunIdRef = useRef(null);
-  const [previewVisible, setPreviewVisible] = useState(false);
+
   const [mergedData, setMergedData] = useState([]);
   const [excelUrl, setExcelUrl] = useState("");
   const [showMergedTable, setShowMergedTable] = useState(false);
   const [filterText, setFilterText] = useState("");
   const [conflictCount, setConflictCount] = useState(null);
 
+  // Sheet Upload Tax Parameter & Dates
   const [taxType, setTaxType] = useState("gst");
   const [startDate, setStartDate] = useState(null);
   const [endDate, setEndDate] = useState(null);
 
-  const [segmentationRunning, setSegmentationRunning] = useState(false);
+  // --- Create Segmentation State Machine ---
+  // 'SEGMENTATION_IDLE' | 'SEGMENTATION_RUNNING' | 'SEGMENTATION_COMPLETED' | 'SEGMENTATION_FAILED'
+  const [segmentationState, setSegmentationState] = useState("SEGMENTATION_IDLE");
+  const [isSegmentationModalOpen, setIsSegmentationModalOpen] = useState(false);
+  const [segTaxType, setSegTaxType] = useState("GST");
+  const [segStartDate, setSegStartDate] = useState(null);
+  const [segEndDate, setSegEndDate] = useState(null);
+  const [segDateError, setSegDateError] = useState("");
+  const [segmentationValidationError, setSegmentationValidationError] = useState(null); // { message, missingYears }
+
   const [segmentationMsg, setSegmentationMsg] = useState("");
   const [segmentationJobId, setSegmentationJobId] = useState(null);
   const [segmentationProgress, setSegmentationProgress] = useState(0);
@@ -111,10 +139,6 @@ export default function UploadSheet() {
     const parsed = dayjs(value, ["DD/MM/YYYY", "YYYY-MM-DD"], true);
     return parsed.isValid() ? parsed : null;
   };
-
-
-  const FILE_BASE_URL = SERVER_BASE_URL;
-
 
   const [sampleLinks, setSampleLinks] = useState({
     gst: "",
@@ -127,6 +151,7 @@ export default function UploadSheet() {
   const validationStepIntervalRef = useRef(null);
   const segmentationPollIntervalRef = useRef(null);
   const pipelinePollIntervalRef = useRef(null);
+
   const getAuthHeaders = () => {
     const token = getToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
@@ -139,22 +164,6 @@ export default function UploadSheet() {
       text,
       confirmButtonColor: "#6A00FF",
     });
-
-  const showHistoryValidationAlert = async (message, missingYears = []) => {
-    const years = Array.isArray(missingYears)
-      ? missingYears.filter((year) => year !== null && year !== undefined)
-      : [];
-
-    await Swal.fire({
-      icon: "error",
-      title: "Validation Failed",
-      html:
-        years.length > 0
-          ? `${message}<br/><br/><strong>Missing Years:</strong><br/>${years.join("<br/>")}`
-          : message,
-      confirmButtonColor: "#6A00FF",
-    });
-  };
 
   const resetUploadSheet = () => {
     terminalRunIdRef.current = null;
@@ -186,19 +195,21 @@ export default function UploadSheet() {
     setInfo("");
     setPipelineState(createInitialPipelineState());
     setRunId(null);
-    setPreviewVisible(false);
     setMergedData([]);
     setExcelUrl("");
     setShowMergedTable(false);
     setFilterText("");
     setConflictCount(null);
-    setTaxType("gst");
     setStartDate(null);
     setEndDate(null);
-    setSegmentationRunning(false);
+
+    setPageState("INITIAL");
+    setSegmentationState("SEGMENTATION_IDLE");
     setSegmentationMsg("");
     setSegmentationJobId(null);
     setSegmentationProgress(0);
+    setSegDateError("");
+    setSegmentationValidationError(null);
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -214,7 +225,7 @@ export default function UploadSheet() {
       return false;
     }
 
-    if (!hasStart && !hasEnd) return true; // dates are optional for validate/run
+    if (!hasStart && !hasEnd) return true;
 
     const parsedStart = dayjs(startDate);
     const parsedEnd = dayjs(endDate);
@@ -232,152 +243,175 @@ export default function UploadSheet() {
     return true;
   };
 
-// ---------------------------------
-// CREATE SEGMENTATION
-// ---------------------------------
-const handleCreateSegmentation = async () => {
-  setError("");
-  setInfo("");
-  setSegmentationMsg("");
-  setSegmentationProgress(0);
+  // ---------------------------------
+  // SEGMENTATION MODAL HANDLERS
+  // ---------------------------------
+  const handleOpenSegmentationModal = () => {
+    if (segmentationState === "SEGMENTATION_RUNNING") return;
+    setIsSegmentationModalOpen(true);
+    setSegDateError("");
+    setSegmentationValidationError(null);
+    setSegmentationState("SEGMENTATION_IDLE");
+  };
 
-  if (!startDate || !endDate) {
-    await showAlert("error", "Missing Date", "Please enter both dates.");
-    return;
-  }
-
-  const parsedStart = dayjs(startDate);
-  const parsedEnd = dayjs(endDate);
-
-  if (!parsedStart.isValid() || !parsedEnd.isValid()) {
-    await showAlert(
-      "error",
-      "Invalid Date",
-      "Please enter valid dates in YYYY-MM-DD format."
-    );
-    return;
-  }
-
-  const formattedStartDate = parsedStart.format("YYYY-MM-DD");
-  const formattedEndDate = parsedEnd.format("YYYY-MM-DD");
-
-  setSegmentationRunning(true);
-
-  try {
-    setSegmentationMsg("Validating historical data...");
-
-    await API.post("/segmentation/validate-history", {
-      tax_type: String(taxType || "").toUpperCase(),
-      start_date: formattedStartDate,
-      end_date: formattedEndDate,
-    });
-
-    setSegmentationMsg("Queueing segmentation job...");
-
-    const startRes = await API.post("/segmentation/start", {
-      start_date: formattedStartDate,
-      end_date: formattedEndDate,
-    });
-
-    setSegmentationJobId(startRes.data.job_id);
-    setSegmentationMsg("Queued: Waiting for background worker...");
+  const handleCloseSegmentationModal = () => {
+    if (segmentationState === "SEGMENTATION_RUNNING") return; // Block closing while running
+    setIsSegmentationModalOpen(false);
+    setSegDateError("");
+    setSegmentationValidationError(null);
+    setSegmentationState("SEGMENTATION_IDLE");
     setSegmentationProgress(0);
-  } catch (err) {
-    const validationData = err.response?.data;
-    const validationMsg = validationData?.message || "Past 3 years data not available.";
-    const missingYears = validationData?.missing_years || [];
-    const isHistoryValidationError =
-      err.response?.config?.url?.includes("/segmentation/validate-history") &&
-      validationData?.valid === false;
+    setSegmentationMsg("");
+  };
 
-    if (isHistoryValidationError) {
-      setSegmentationRunning(false);
-      setError(validationMsg);
-      await showHistoryValidationAlert(validationMsg, missingYears);
+  const handleStartSegmentation = async () => {
+    setSegDateError("");
+    setSegmentationValidationError(null);
+
+    if (!segTaxType) {
+      setSegDateError("Please select a Tax Parameter.");
       return;
     }
 
-    const msg = validationData?.error || validationData?.message || err.message || "Segmentation failed.";
-    setSegmentationRunning(false);
-    setSegmentationJobId(null);
-    setError(msg);
-    await showAlert("error", "Segmentation Failed", msg);
-  }
-};
+    if (!segStartDate || !segEndDate) {
+      setSegDateError("Please select both From and To dates.");
+      return;
+    }
 
-useEffect(() => {
-  if (!segmentationJobId) return undefined;
+    const parsedStart = dayjs(segStartDate);
+    const parsedEnd = dayjs(segEndDate);
 
-  let isActive = true;
-  let pollInFlight = false;
+    if (!parsedStart.isValid() || !parsedEnd.isValid()) {
+      setSegDateError("Please enter valid dates (DD/MM/YYYY).");
+      return;
+    }
 
-  const pollStatus = async () => {
-    if (!isActive || pollInFlight) return;
-    pollInFlight = true;
+    if (parsedEnd.isBefore(parsedStart, "day")) {
+      setSegDateError("End date must be on or after start date.");
+      return;
+    }
 
+    const formattedStartDate = parsedStart.format("YYYY-MM-DD");
+    const formattedEndDate = parsedEnd.format("YYYY-MM-DD");
+
+    setSegmentationState("SEGMENTATION_RUNNING");
+    setSegmentationMsg("Validating historical data...");
+    setSegmentationProgress(0);
+
+    // Step 1: Validate history against DB
     try {
-      const res = await API.get(`/segmentation/status/${segmentationJobId}`);
-      if (!isActive) return;
-
-      const status = String(res.data?.status || "Queued");
-      const normalizedStatus = status.toLowerCase();
-      const currentStep = res.data?.current_step || "";
-      const nextProgress = Number(res.data?.percentage ?? 0);
-      const totalSegmented = Number(res.data?.total_segmented ?? 0);
-      const nextError = res.data?.error || res.data?.message;
-
-      setSegmentationProgress(Number.isFinite(nextProgress) ? nextProgress : 0);
-      setSegmentationMsg(currentStep ? `${status}: ${currentStep}` : status);
-
-      if (normalizedStatus === "completed") {
-        setSegmentationRunning(false);
-        setSegmentationJobId(null);
-        setSegmentationProgress(100);
-        setSegmentationMsg(`Segmentation Completed Successfully. Total segmented: ${totalSegmented}`);
-        setInfo("Segmentation completed successfully.");
-        const result = await showAlert("success", "Success", "Segmentation completed successfully.");
-        if (result?.isConfirmed) {
-          resetUploadSheet();
-        }
-        return;
-      }
-
-      if (normalizedStatus === "failed") {
-        const msg = nextError || "Segmentation failed.";
-        setSegmentationRunning(false);
-        setSegmentationJobId(null);
-        setError(msg);
-        await showAlert("error", "Segmentation Failed", msg);
-      }
+      await API.post("/segmentation/validate-history", {
+        tax_type: String(segTaxType || "").toUpperCase(),
+        start_date: formattedStartDate,
+        end_date: formattedEndDate,
+      });
     } catch (err) {
-      if (!isActive) return;
-      const msg = err.response?.data?.error || err.response?.data?.message || err.message || "Segmentation status check failed.";
-      setSegmentationRunning(false);
-      setSegmentationJobId(null);
-      setError(msg);
-      await showAlert("error", "Segmentation Failed", msg);
-    } finally {
-      pollInFlight = false;
+      // STOP LOADER IMMEDIATELY & Transition existing modal into in-modal error view (No nested modal!)
+      const validationData = err.response?.data;
+      const validationMsg = validationData?.message || "Past 3 years data not available.";
+      const missingYears = validationData?.missing_years || [];
+
+      setSegmentationState("SEGMENTATION_FAILED");
+      setSegmentationValidationError({
+        message: validationMsg,
+        missingYears: missingYears,
+      });
+      return;
+    }
+
+    // Step 2: History valid, start segmentation background job
+    try {
+      setSegmentationMsg("Queueing segmentation job...");
+
+      const startRes = await API.post("/segmentation/start", {
+        start_date: formattedStartDate,
+        end_date: formattedEndDate,
+      });
+
+      setSegmentationJobId(startRes.data.job_id);
+      setSegmentationMsg("Queued: Waiting for background worker...");
+      setSegmentationProgress(0);
+    } catch (err) {
+      const valData = err.response?.data;
+      const msg = valData?.error || valData?.message || err.message || "Segmentation job failed.";
+      setSegmentationState("SEGMENTATION_FAILED");
+      setSegmentationValidationError({
+        message: msg,
+        missingYears: [],
+      });
     }
   };
 
-  pollStatus();
-  segmentationPollIntervalRef.current = window.setInterval(pollStatus, 3000);
+  // Polling Effect for Segmentation Job Status
+  useEffect(() => {
+    if (!segmentationJobId) return undefined;
 
-  return () => {
-    isActive = false;
-    if (segmentationPollIntervalRef.current) {
-      window.clearInterval(segmentationPollIntervalRef.current);
-      segmentationPollIntervalRef.current = null;
-    }
-  };
-}, [segmentationJobId]);
+    let isActive = true;
+    let pollInFlight = false;
 
-  // -------------------------------------------------
-  //  NEW DYNAMIC BASE PATH (NO HOST, NO LOCALHOST)
-  // -------------------------------------------------
+    const pollStatus = async () => {
+      if (!isActive || pollInFlight) return;
+      pollInFlight = true;
+
+      try {
+        const res = await API.get(`/segmentation/status/${segmentationJobId}`);
+        if (!isActive) return;
+
+        const status = String(res.data?.status || "Queued");
+        const normalizedStatus = status.toLowerCase();
+        const currentStep = res.data?.current_step || "";
+        const nextProgress = Number(res.data?.percentage ?? 0);
+        const totalSegmented = Number(res.data?.total_segmented ?? 0);
+        const nextError = res.data?.error || res.data?.message;
+
+        setSegmentationProgress(Number.isFinite(nextProgress) ? nextProgress : 0);
+        setSegmentationMsg(currentStep ? `${status}: ${currentStep}` : status);
+
+        if (normalizedStatus === "completed") {
+          setSegmentationState("SEGMENTATION_COMPLETED");
+          setSegmentationJobId(null); // Stop polling immediately
+          setSegmentationProgress(100);
+          setSegmentationMsg(`Segmentation Completed Successfully. Total segmented: ${totalSegmented}`);
+          setInfo("Segmentation completed successfully.");
+          return;
+        }
+
+        if (normalizedStatus === "failed") {
+          const msg = nextError || "Segmentation failed.";
+          setSegmentationState("SEGMENTATION_FAILED");
+          setSegmentationJobId(null); // Stop polling immediately
+          setSegmentationValidationError({
+            message: msg,
+            missingYears: [],
+          });
+        }
+      } catch (err) {
+        if (!isActive) return;
+        const msg = err.response?.data?.error || err.response?.data?.message || err.message || "Segmentation status check failed.";
+        setSegmentationState("SEGMENTATION_FAILED");
+        setSegmentationJobId(null); // Stop polling immediately
+        setSegmentationValidationError({
+          message: msg,
+          missingYears: [],
+        });
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    pollStatus();
+    segmentationPollIntervalRef.current = window.setInterval(pollStatus, 3000);
+
+    return () => {
+      isActive = false;
+      if (segmentationPollIntervalRef.current) {
+        window.clearInterval(segmentationPollIntervalRef.current);
+        segmentationPollIntervalRef.current = null;
+      }
+    };
+  }, [segmentationJobId]);
+
   const TAX_PATH = `/${taxType}`;
-  // -------------------------------------------------
 
   const canProcess =
     uploadResponse?.valid === true &&
@@ -385,7 +419,7 @@ useEffect(() => {
   const validating =
     pipelineState.phase === "validating" || pipelineState.phase === "validation-complete";
   const processing = pipelineState.phase === "processing";
-  const controlsDisabled = pipelineState.busy;
+  const controlsDisabled = pipelineState.busy || segmentationState === "SEGMENTATION_RUNNING";
   const statusMsg = pipelineState.message;
   const progress = pipelineState.progress;
   const showValidationSummary = pipelineState.showValidationSummary;
@@ -409,11 +443,12 @@ useEffect(() => {
     if (!isSupported) {
       setError("Only CSV and Parquet files are supported.");
       setFile(null);
+      setPageState("INITIAL");
       return;
     }
 
     setFile(chosenFile);
-    setPreviewVisible(false);
+    setPageState("FILE_SELECTED");
   };
 
   const handleFileClick = () => {
@@ -422,120 +457,135 @@ useEffect(() => {
   };
 
   const handlePreview = () => {
-    if (controlsDisabled) return;
-    if (!file) return setError("Please select a file first.");
+    if (controlsDisabled || !file) return;
 
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (result) => {
-        setPreviewRows(result.data.slice(0, 10));
-        setPreviewVisible(true);
-      },
-    });
+    setError("");
+    setPageState("PREVIEW_LOADING");
+    setIsPreviewExpanded(true);
+
+    setTimeout(() => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (result) => {
+          setPreviewRows(result.data.slice(0, 10));
+          setPageState("PREVIEW_READY");
+          setIsPreviewExpanded(true);
+        },
+        error: (err) => {
+          setError("Failed to parse CSV preview: " + err.message);
+          setPageState("INITIAL");
+        },
+      });
+    }, 300);
   };
 
+  // Cancel Preview Action - resets upload workflow without changing unrelated page state
+  const handleCancelPreview = () => {
+    setFile(null);
+    setPreviewRows([]);
+    setUploadResponse(null);
+    setError("");
+    setInfo("");
+    setPageState("INITIAL");
+    setIsPreviewExpanded(true);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
 
-// -------------------------------
-// Upload + validate (FIXED)
-// -------------------------------
+  // -------------------------------
+  // Upload + validate
+  // -------------------------------
   const handleUploadPreview = async () => {
-  if (pipelineState.busy || validating) return;
-  setError("");
-  setInfo("");
-  setConflictCount(null);
+    if (pipelineState.busy || validating) return;
+    setError("");
+    setInfo("");
+    setConflictCount(null);
 
-  if (!file) return setError("Please select a file.");
+    if (!file) return setError("Please select a file.");
+    if (!(await validateDateRangeIfProvided())) return;
 
-  // Dates are optional for validate/run, but if provided they must be valid and ordered.
-  if (!(await validateDateRangeIfProvided())) return;
+    const formData = new FormData();
+    formData.append("file", file);
 
-  const formData = new FormData();
-  formData.append("file", file);
+    if (validationCompletionTimeoutRef.current) {
+      window.clearTimeout(validationCompletionTimeoutRef.current);
+      validationCompletionTimeoutRef.current = null;
+    }
 
-  if (validationCompletionTimeoutRef.current) {
-    window.clearTimeout(validationCompletionTimeoutRef.current);
-    validationCompletionTimeoutRef.current = null;
-  }
-
-  setPipelineState({
-    phase: "validating",
-    busy: true,
-    message: "Uploading file...",
-    progress: 0,
-    showValidationSummary: false,
-    validationStepIndex: 0,
-  });
-
-  try {
-    setInfo("Validating file...");
-
-    const taxTypeLower = String(taxType || "").toLowerCase();
-    const validateApi = `${API_BASE_URL}/${taxTypeLower}/validate`;
-    console.log("Selected Tax Type:", taxType);
-    console.log("Validate API:", validateApi);
-
-    const res = await API.post(`${TAX_PATH}/validate`, formData, {
-      headers: { "Content-Type": "multipart/form-data" },
+    setPageState("UPLOAD_VALIDATING");
+    setPipelineState({
+      phase: "validating",
+      busy: true,
+      message: "Uploading file...",
+      progress: 0,
+      showValidationSummary: false,
+      validationStepIndex: 0,
     });
 
-    setUploadResponse(res.data);
-    setConflictCount(
-      Number(
-        res.data.financial_difference_count ??
-          res.data.db_financial_difference_fields_count ??
-          res.data.db_financial_differences_count ??
-          0
-      )
-    );
-    setPipelineState((prev) => ({
-      ...prev,
-      phase: "validation-complete",
-      busy: true,
-      message: "Validation Complete",
-      showValidationSummary: false,
-    }));
+    try {
+      setInfo("Validating file...");
+      const res = await API.post(`${TAX_PATH}/validate`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
-    validationCompletionTimeoutRef.current = window.setTimeout(() => {
-      setPreviewVisible(false);
-      setInfo(res.data.valid ? "Validation successful." : "Validation completed.");
+      setUploadResponse(res.data);
+      setConflictCount(
+        Number(
+          res.data.financial_difference_count ??
+            res.data.db_financial_difference_fields_count ??
+            res.data.db_financial_differences_count ??
+            0
+        )
+      );
       setPipelineState((prev) => ({
         ...prev,
-        phase: "ready",
-        busy: false,
-        message: res.data.valid ? "Validation successful." : "Validation completed.",
-        showValidationSummary: true,
+        phase: "validation-complete",
+        busy: true,
+        message: "Validation Complete",
+        showValidationSummary: false,
       }));
-      validationCompletionTimeoutRef.current = null;
-    }, 700);
-  } catch (err) {
-    const msg =
-      err.response?.data?.message ||
-      err.response?.data?.error ||
-      err.message ||
-      "Validation failed.";
-    setPipelineState(createInitialPipelineState());
-    setError(msg);
-    showAlert("error", "Validation Failed", msg);
-  }
-};
 
-
-
+      validationCompletionTimeoutRef.current = window.setTimeout(() => {
+        setPageState("UPLOAD_SUCCESS");
+        setIsPreviewExpanded(false); // Automatically collapse table when Process button arrives!
+        setInfo(res.data.valid ? "Validation successful." : "Validation completed.");
+        setPipelineState((prev) => ({
+          ...prev,
+          phase: "ready",
+          busy: false,
+          message: res.data.valid ? "Validation successful." : "Validation completed.",
+          showValidationSummary: true,
+        }));
+        validationCompletionTimeoutRef.current = null;
+      }, 700);
+    } catch (err) {
+      const msg =
+        err.response?.data?.message ||
+        err.response?.data?.error ||
+        err.message ||
+        "Validation failed.";
+      setPipelineState(createInitialPipelineState());
+      setPageState("UPLOAD_ERROR");
+      setError(msg);
+      showAlert("error", "Validation Failed", msg);
+    }
+  };
 
   // -------------------------------
   // Fetch Sample Files
   // -------------------------------
   const fetchSampleFiles = async () => {
     try {
-      const res = await API.get("/segmentation/get-sample-files"); //  FIXED: remove localhost
+      const res = await API.get("/segmentation/get-sample-files");
       setSampleLinks({
         gst: res.data.gst.url,
         swt: res.data.swt.url,
         cit: res.data.cit.url,
       });
     } catch (e) {
-      console.error(e);
+      console.error("Failed to fetch sample links:", e);
     }
   };
 
@@ -596,15 +646,19 @@ useEffect(() => {
   }, []);
 
   const downloadFile = async (url, fileName) => {
-    const response = await axios.get(url, {
-      responseType: "blob",
-      headers: getAuthHeaders(),
-    });
+    try {
+      const response = await axios.get(url, {
+        responseType: "blob",
+        headers: getAuthHeaders(),
+      });
 
-    const link = document.createElement("a");
-    link.href = window.URL.createObjectURL(new Blob([response.data]));
-    link.download = fileName;
-    link.click();
+      const link = document.createElement("a");
+      link.href = window.URL.createObjectURL(new Blob([response.data]));
+      link.download = fileName;
+      link.click();
+    } catch (err) {
+      showAlert("error", "Download Failed", "Could not download sample file.");
+    }
   };
 
   const downloadInvalidCsv = async (removedDataFile) => {
@@ -649,35 +703,24 @@ useEffect(() => {
     }
   };
 
-  // -------------------------------
-  // Reset everything
-  // -------------------------------
   const handleBack = () => {
     resetUploadSheet();
   };
 
-  // Legacy client-side processing flow removed.
   useEffect(() => {
     if (!runId) return;
 
     let isActive = true;
     let pollInFlight = false;
     pipelinePollIntervalRef.current = setInterval(async () => {
-      if (
-        !isActive ||
-        pollInFlight ||
-        terminalRunIdRef.current === runId
-      ) {
+      if (!isActive || pollInFlight || terminalRunIdRef.current === runId) {
         return;
       }
 
       pollInFlight = true;
       try {
         const res = await API.get(`${TAX_PATH}/status/${runId}`);
-        if (
-          !isActive ||
-          terminalRunIdRef.current === runId
-        ) {
+        if (!isActive || terminalRunIdRef.current === runId) {
           return;
         }
 
@@ -719,10 +762,6 @@ useEffect(() => {
           }));
 
           if (isCompleted && !isFailed) {
-            // A per-tax upload is complete once its database insert succeeds.
-            // Running full MultiTax aggregation here can scan millions of rows
-            // and kept this page in a permanent "Processing" state. It is a
-            // separate operation and must not hide the completed upload.
             setRunId(null);
             const result = await showAlert("success", "Completed", "Upload completed successfully.");
             if (result?.isConfirmed) {
@@ -787,14 +826,6 @@ useEffect(() => {
   const handleProcess = async () => {
     if (pipelineState.busy) return;
 
-    const requestTraceId = `swt-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    console.log("[SWT FRONTEND] handleProcess called", {
-      requestTraceId,
-      timestamp: new Date().toISOString(),
-      taxType,
-      processing,
-      runId,
-    });
     if (!file) return setError("Please select a file first.");
     if (!uploadResponse?.valid) return setError("Please validate the file first.");
     if (Number(uploadResponse?.valid_records || 0) <= 0) {
@@ -820,15 +851,8 @@ useEffect(() => {
     }
 
     const getValidatedFileName = (resp) => {
-      console.log("validate response =>", resp);
-
       const filename = resp?.validated_file;
-
-      if (filename) {
-        console.log("Using validated filename:", filename);
-        return String(filename).trim();
-      }
-
+      if (filename) return String(filename).trim();
       return null;
     };
 
@@ -836,8 +860,6 @@ useEffect(() => {
     if (!validatedFileName) {
       return setError("Validated file is missing. Please validate again.");
     }
-
-    console.log(uploadResponse);
 
     setError("");
     terminalRunIdRef.current = null;
@@ -851,27 +873,11 @@ useEffect(() => {
     }));
 
     const formData = new FormData();
-    // IMPORTANT: run API expects the validated artifact name, not the raw uploaded file.
     formData.append("validated_file", validatedFileName);
-
-    // Required for processing
     formData.append("date_from", parsedStart.format("YYYY-MM-DD"));
     formData.append("date_to", parsedEnd.format("YYYY-MM-DD"));
 
     try {
-      const taxTypeLower = String(taxType || "").toLowerCase();
-      const runApi = `${API_BASE_URL}/${taxTypeLower}/run`;
-      console.log("Selected Tax Type:", taxType);
-      console.log("Run API:", runApi);
-      console.log("[SWT FRONTEND] POST /run", {
-        requestTraceId,
-        endpoint: `${TAX_PATH}/run`,
-        validatedFileName,
-        date_from: parsedStart.format("YYYY-MM-DD"),
-        date_to: parsedEnd.format("YYYY-MM-DD"),
-        timestamp: new Date().toISOString(),
-      });
-
       const res = await API.post(`${TAX_PATH}/run`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -893,62 +899,6 @@ useEffect(() => {
         err.response?.data?.error ||
         err.message ||
         "Run failed.";
-      console.error("Run failed:", err?.response?.status, err?.response?.data || err);
-
-      // If backend can't locate the validated artifact, fall back to uploading the raw file.
-      // This keeps the UI working across environments where backend final_output isn't shared.
-      const status = err?.response?.status;
-      const errText = String(err?.response?.data?.error || err?.response?.data?.message || "");
-      const looksLikeMissingValidatedFile =
-        status === 404 && errText.toLowerCase().includes("validated_file not found");
-
-      if (looksLikeMissingValidatedFile) {
-        try {
-          console.log("[SWT FRONTEND] POST /run fallback with raw file", {
-            requestTraceId,
-            endpoint: `${TAX_PATH}/run`,
-            originalError: errText,
-            timestamp: new Date().toISOString(),
-          });
-          const fallbackFormData = new FormData();
-          fallbackFormData.append("file", file);
-          if (startDate) fallbackFormData.append("date_from", dayjs(startDate).format("YYYY-MM-DD"));
-          if (endDate) fallbackFormData.append("date_to", dayjs(endDate).format("YYYY-MM-DD"));
-
-          const fallbackRes = await API.post(`${TAX_PATH}/run`, fallbackFormData, {
-            headers: { "Content-Type": "multipart/form-data" },
-          });
-
-          const fallbackRunId = fallbackRes.data?.run_id;
-          if (!fallbackRunId) throw new Error("Missing run_id from server.");
-
-          terminalRunIdRef.current = null;
-          setRunId(fallbackRunId);
-          setPipelineState((prev) => ({
-            ...prev,
-            phase: "processing",
-            busy: true,
-            message: formatPipelineStatus({ status: fallbackRes.data?.status || "queued", step: fallbackRes.data?.step || "" }),
-            showValidationSummary: true,
-          }));
-          return;
-        } catch (fallbackErr) {
-          const fallbackMsg =
-            fallbackErr.response?.data?.message ||
-            fallbackErr.response?.data?.error ||
-            fallbackErr.message ||
-            msg;
-          setError(fallbackMsg);
-          setPipelineState((prev) => ({
-            ...prev,
-            phase: "ready",
-            busy: false,
-            showValidationSummary: true,
-          }));
-          showAlert("error", "Run Failed", fallbackMsg);
-          return;
-        }
-      }
 
       setError(msg);
       setPipelineState((prev) => ({
@@ -961,10 +911,6 @@ useEffect(() => {
     }
   };
 
-
-  // -------------------------------
-  // FETCH MERGED DATA
-  // -------------------------------
   const filteredData = mergedData.filter((item) =>
     Object.values(item).some((v) =>
       String(v).toLowerCase().includes(filterText.toLowerCase())
@@ -985,8 +931,7 @@ useEffect(() => {
       cell: (row) => (
         <span
           style={{
-            color:
-              row.Fraud === "Fraud Detected" ? "#ff4d4d" : "#036b48",
+            color: row.Fraud === "Fraud Detected" ? "#ff4d4d" : "#036b48",
             fontWeight: "bold",
           }}
         >
@@ -998,9 +943,6 @@ useEffect(() => {
     { name: "Fraud Reason", selector: (row) => row.Fraud_Reason },
   ];
 
-  // ===============================
-  // Render layout
-  // ===============================
   return (
     <div className="container-fluid">
       <div className="row">
@@ -1016,91 +958,85 @@ useEffect(() => {
 
           <main className="main-content mt-5">
             <div className="container-fluid">
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                  <div className="header-title-page">Upload Sheet</div>
-                    <div className="d-flex gap-2">
-                      <div className="d-flex flex-column align-items-start">
-                        {/* Bootstrap Message */}
-                        <small className="text-muted mt-2">
-                          <strong>*Only after uploading GST, SWT & CIT files</strong>
-                        </small>
+              {/* Top Header & Action Row */}
+              <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-3 mb-4">
+                <div className="header-title-page text-nowrap">Upload Sheet</div>
 
-                         <Button
-                          variant="contained"
-                          color="secondary"
-                          onClick={handleCreateSegmentation}
-                          disabled={segmentationRunning || controlsDisabled}
-                          startIcon={
-                            segmentationRunning ? (
-                              <CircularProgress size={16} color="inherit" />
-                            ) : null
-                          }
-                        >
-                          {segmentationRunning ? "Segmenting..." : "Create Segmentation"}
-                        </Button>
-
-                        {(segmentationRunning || segmentationMsg) && (
-                          <Paper sx={{ mt: 1.5, p: 1.5, width: "100%", minWidth: 280 }}>
-                            <Typography variant="body2" sx={{ mb: 1 }}>
-                              {segmentationMsg || "Queued..."}
-                            </Typography>
-                            <LinearProgress
-                              variant="determinate"
-                              value={Math.min(100, Math.max(0, segmentationProgress))}
-                              sx={{ height: 8, borderRadius: 4 }}
-                            />
-                          </Paper>
-                        )}
-
-                      </div>
-                      
+                <div className="d-flex flex-wrap align-items-center gap-3 w-100 w-md-auto justify-content-end">
+                  {/* Sample Files Container */}
+                  <div className="sample-files-card">
+                    <div className="sample-files-title">Sample Files</div>
+                    <div className="sample-files-btn-group">
                       <Button
                         component="a"
-                        download
-                        variant="contained"
+                        variant="outlined"
                         size="small"
-                        color="success"
-                        startIcon={<DescriptionIcon />}
+                        color="primary"
+                        className="sample-file-btn"
+                        startIcon={<FileDownloadIcon />}
                         onClick={() => downloadFile(sampleLinks.gst, "sample_gst.csv")}
                         disabled={controlsDisabled}
                       >
                         Sample GST
                       </Button>
-
                       <Button
                         component="a"
-                        download
-                        variant="contained"
+                        variant="outlined"
                         size="small"
-                        color="success"
-                        startIcon={<DescriptionIcon />}
+                        color="primary"
+                        className="sample-file-btn"
+                        startIcon={<FileDownloadIcon />}
                         onClick={() => downloadFile(sampleLinks.swt, "sample_swt.csv")}
                         disabled={controlsDisabled}
                       >
                         Sample SWT
                       </Button>
-
                       <Button
                         component="a"
-                        download
-                        variant="contained"
+                        variant="outlined"
                         size="small"
-                        color="success"
-                        startIcon={<DescriptionIcon />}
+                        color="primary"
+                        className="sample-file-btn"
+                        startIcon={<FileDownloadIcon />}
                         onClick={() => downloadFile(sampleLinks.cit, "sample_cit.csv")}
                         disabled={controlsDisabled}
                       >
                         Sample CIT
                       </Button>
-
                     </div>
                   </div>
 
+                  {/* Create Segmentation Action & Requirement Note Card (No BG) */}
+                  <div className="create-segmentation-card">
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      onClick={handleOpenSegmentationModal}
+                      disabled={segmentationState === "SEGMENTATION_RUNNING" || controlsDisabled}
+                      sx={{
+                        backgroundColor: "#6A00FF",
+                        fontWeight: "bold",
+                        px: 3,
+                        py: 1,
+                        "&:hover": { backgroundColor: "#5700d1" },
+                      }}
+                    >
+                      CREATE SEGMENTATION
+                    </Button>
 
+                    <div className="segmentation-requirement-note">
+                      <InfoOutlinedIcon fontSize="small" color="primary" />
+                      <span>
+                        Requirement: Three years of historical GST, SWT, and CIT data must be available before segmentation can be created.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sheet Selection & Date Filters */}
               <LocalizationProvider dateAdapter={AdapterDayjs}>
-                <div className="row g-3 align-items-end">
-
-                  {/* Tax Parameter Dropdown */}
+                <div className="row g-3 align-items-end mb-4">
                   <div className="col-lg-4 col-md-12">
                     <label htmlFor="taxSelect" className="form-label fw-bold">
                       Select Tax Parameter
@@ -1118,7 +1054,6 @@ useEffect(() => {
                     </select>
                   </div>
 
-                  {/* Start Date Material UI Date Picker */}
                   <div className="col-lg-4 col-md-6">
                     <label className="form-label fw-bold">Assessed Dates: From</label>
                     <DatePicker
@@ -1141,7 +1076,6 @@ useEffect(() => {
                     />
                   </div>
 
-                  {/* End Date Material UI Date Picker */}
                   <div className="col-lg-4 col-md-6">
                     <label className="form-label fw-bold">To</label>
                     <DatePicker
@@ -1163,203 +1097,250 @@ useEffect(() => {
                       }}
                     />
                   </div>
-
                 </div>
               </LocalizationProvider>
 
-
-
-              {/* Upload Section */}
+              {/* Main Upload / Preview / Summary Section */}
               {!showMergedTable && (
                 <Paper className="p-4 mb-3 upload-paper">
-                  {/* Dropzone */}
-                  <div
-                    className="upload-dropzone border rounded text-center p-4 mb-3 bg-light"
-                    onClick={handleFileClick}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (controlsDisabled) return;
-                      handleFileChosen(e.dataTransfer.files[0]);
-                    }}
-                    onDragOver={(e) => e.preventDefault()}
-                    style={{ cursor: controlsDisabled ? "not-allowed" : "pointer" }}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".csv"
-                      style={{ display: "none" }}
-                      disabled={controlsDisabled}
-                      onChange={(e) => handleFileChosen(e.target.files[0])}
-                    />
-                    <FaCloudUploadAlt size={44} className="text-primary mb-2" />
-                    <div className="fw-semibold">
-                      {file ? file.name : "Click or drop CSV file here"}
-                    </div>
-                    <div className="text-muted small">Only CSV files supported</div>
-                  </div>
+                  {/* Dropzone & Show Preview Button - Hidden when preview is ready or uploaded */}
+                  {pageState !== "PREVIEW_READY" &&
+                    pageState !== "UPLOAD_VALIDATING" &&
+                    pageState !== "UPLOAD_SUCCESS" && (
+                      <>
+                        <div
+                          className="upload-dropzone border rounded text-center p-4 mb-3 bg-light"
+                          onClick={handleFileClick}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (controlsDisabled) return;
+                            handleFileChosen(e.dataTransfer.files[0]);
+                          }}
+                          onDragOver={(e) => e.preventDefault()}
+                          style={{ cursor: controlsDisabled ? "not-allowed" : "pointer" }}
+                        >
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".csv"
+                            style={{ display: "none" }}
+                            disabled={controlsDisabled}
+                            onChange={(e) => handleFileChosen(e.target.files[0])}
+                          />
+                          <FaCloudUploadAlt size={44} className="text-primary mb-2" />
+                          <div className="fw-semibold">
+                            {file ? file.name : "Click or drop CSV file here"}
+                          </div>
+                          <div className="text-muted small">Only CSV files supported</div>
+                        </div>
 
-                  {/* Buttons */}
-                  <div className="d-flex gap-2 flex-wrap">
-                    {!uploadResponse && (
-                      <Button
-                        variant="contained"
-                        color="secondary"
-                        onClick={handlePreview}
-                        disabled={!file || controlsDisabled}
-                      >
-                        Show Preview
-                      </Button>
+                        <div className="d-flex gap-2 flex-wrap">
+                          <Button
+                            variant="contained"
+                            color="secondary"
+                            onClick={handlePreview}
+                            disabled={!file || controlsDisabled || pageState === "PREVIEW_LOADING"}
+                            sx={{ backgroundColor: "#6A00FF" }}
+                          >
+                            {pageState === "PREVIEW_LOADING" ? "Loading Preview..." : "SHOW PREVIEW"}
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={handleCancelPreview}
+                            disabled={controlsDisabled}
+                          >
+                            CANCEL
+                          </Button>
+                        </div>
+                      </>
                     )}
 
-                    {previewVisible && (
-                      <Button
-                        variant="contained"
-                        color="purple"
-                        onClick={handleUploadPreview}
-                        disabled={!file || controlsDisabled}
-                        startIcon={validating ? <CircularProgress size={18} color="inherit" /> : null}
-                      >
-                        {validating ? "Validating..." : "Upload & Validate"}
-                      </Button>
-                    )}
-
-                    <Button variant="outlined" onClick={handleBack} disabled={controlsDisabled}>
-                      Back
-                    </Button>
-                  </div>
-
-                  {/* CSV Preview Section */}
-                  {previewVisible && previewRows.length > 0 && (
-                    <Paper className="p-3 mt-3">
-                      <Typography variant="subtitle1" gutterBottom>
-                        File Preview (first 10 rows)
+                  {/* Skeleton Loading State for Preview */}
+                  {pageState === "PREVIEW_LOADING" && (
+                    <Paper className="p-3 mt-3 preview-table-container">
+                      <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                        File Preview — First 10 Rows
                       </Typography>
-                      <div
-                        className="table-responsive"
-                        style={{ maxHeight: "300px", overflowY: "auto" }}
-                      >
-                        <table className="table table-sm table-striped">
-                          <thead>
-                            <tr>
-                              {Object.keys(previewRows[0]).map((col) => (
-                                <th key={col}>{col}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {previewRows.map((row, i) => (
-                              <tr key={i}>
-                                {Object.values(row).map((val, j) => (
-                                  <td key={j}>{String(val)}</td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      <Box sx={{ p: 2 }}>
+                        <Skeleton variant="rectangular" height={40} sx={{ mb: 1, borderRadius: 1 }} />
+                        <Skeleton variant="rectangular" height={30} sx={{ mb: 1, borderRadius: 1 }} />
+                        <Skeleton variant="rectangular" height={30} sx={{ mb: 1, borderRadius: 1 }} />
+                        <Skeleton variant="rectangular" height={30} sx={{ mb: 1, borderRadius: 1 }} />
+                        <Skeleton variant="rectangular" height={30} sx={{ borderRadius: 1 }} />
+                      </Box>
                     </Paper>
                   )}
 
-                  {showValidationSummary && uploadResponse && (
-                    <>
-                      <Paper className="p-3 mb-3 upload-paper">
-                        <div className="d-flex justify-content-between mb-2 flex-wrap">
-                          <div><strong>File:</strong> {file?.name || "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â"}</div>
-                          <div>
-                            <strong>Total:</strong> {uploadResponse.total_records ?? 0} |{" "}
-                            <strong>Valid:</strong> {uploadResponse.valid_records ?? 0} |{" "}
-                            <strong>Invalid:</strong> {uploadResponse.invalid_records ?? 0}
+                  {/* Render Table Container & Bottom Actions when Preview is Ready */}
+                  {(pageState === "PREVIEW_READY" ||
+                    pageState === "UPLOAD_VALIDATING" ||
+                    pageState === "UPLOAD_SUCCESS") &&
+                    previewRows.length > 0 && (
+                      <Paper className="p-3 mt-3 preview-table-container">
+                        <div
+                          className="preview-table-header d-flex justify-content-between align-items-center"
+                          onClick={() => setIsPreviewExpanded((prev) => !prev)}
+                        >
+                          <div className="d-flex align-items-center gap-2">
+                            <Typography variant="subtitle1" fontWeight="bold" color="text.primary">
+                              File Preview — First 10 Rows
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              ({file?.name})
+                            </Typography>
+                          </div>
+
+                          <div className="d-flex align-items-center gap-2">
+                            <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "inline" } }}>
+                              {isPreviewExpanded ? "Click to collapse" : "Click to expand"}
+                            </Typography>
+                            <IconButton size="small" aria-label={isPreviewExpanded ? "Collapse preview table" : "Expand preview table"}>
+                              {isPreviewExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                            </IconButton>
                           </div>
                         </div>
 
-                        <div className="mb-3">
-                          <strong>Duplicates:</strong> {uploadResponse.db_duplicates_count ?? 0} |{" "}
-                          <strong>Financial Differences:</strong>{" "}
-                          {uploadResponse.financial_difference_count ??
-                            uploadResponse.db_financial_difference_fields_count ??
-                            uploadResponse.db_financial_differences_count ??
-                            0} |{" "}
-                          <strong>TIN Invalid:</strong> {uploadResponse.tin_invalid_count ?? 0} |{" "}
-                          <span style={{ marginLeft: 8 }}>
-                            {(() => {
-                              const invalid = Number(uploadResponse.invalid_records ?? 0);
-                              const dup = Number(uploadResponse.db_duplicates_count ?? 0);
-                              const tinInvalid = Number(uploadResponse.tin_invalid_count ?? 0);
-                              const sum = dup + tinInvalid;
-                              const ruleFail = Math.max(0, invalid - sum);
-                              return (
-                                <>
-                                  <strong>Rule validation Fail:</strong> {ruleFail ?? 0}
-                                </>
-                              );
-                            })()}
-                          </span>
-                        </div>
+                        <Collapse in={isPreviewExpanded}>
+                          <div className="preview-table-wrapper subtle-scrollbar mt-2">
+                            <table className="table table-sm table-bordered table-striped table-hover mb-0 preview-table">
+                              <thead>
+                                <tr>
+                                  {Object.keys(previewRows[0]).map((col) => (
+                                    <th key={col} className="sticky-header">
+                                      {col}
+                                    </th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {previewRows.map((row, i) => (
+                                  <tr key={i}>
+                                    {Object.values(row).map((val, j) => (
+                                      <td key={j}>{String(val)}</td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
 
-                        {Number(uploadResponse.invalid_records ?? 0) > 0 &&
-                          uploadResponse.removed_data_file && (
-                            <div className="mb-3">
+                          {/* Bottom-right Action Buttons after Preview */}
+                          {pageState === "PREVIEW_READY" && (
+                            <div className="d-flex justify-content-end gap-2 mt-3 pt-2 border-top">
                               <Button
                                 variant="outlined"
-                                color="warning"
-                                size="small"
-                                onClick={() => {
-                                  downloadInvalidCsv(uploadResponse.removed_data_file);
+                                color="inherit"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCancelPreview();
                                 }}
+                                disabled={controlsDisabled}
                               >
-                                Download Invalid Records CSV
+                                CANCEL
+                              </Button>
+
+                              <Button
+                                variant="contained"
+                                color="secondary"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUploadPreview();
+                                }}
+                                disabled={!file || controlsDisabled}
+                                startIcon={validating ? <CircularProgress size={18} color="inherit" /> : null}
+                                sx={{ backgroundColor: "#6A00FF", fontWeight: "bold" }}
+                              >
+                                {validating ? "Validating..." : "UPLOAD & VALIDATE"}
                               </Button>
                             </div>
                           )}
+                        </Collapse>
+                      </Paper>
+                    )}
 
-                        {conflictCount !== null && (
-                          <>
-                            <div className="mb-1">
-                              <strong>Financial Differences (Pending Approval):</strong>{" "}
-                              {conflictCount}
-                            </div>
-                            {Number(conflictCount ?? 0) > 0 &&
-                              uploadResponse?.financial_difference_file && (
-                                <div className="mb-1">
-                                  <Button
-                                    variant="outlined"
-                                    color="info"
-                                    size="small"
-                                    onClick={() => {
-                                      downloadInvalidCsv(uploadResponse.financial_difference_file);
-                                    }}
-                                  >
-                                    Download Financial Difference CSV
-                                  </Button>
-                                </div>
-                              )}
-                            {uploadResponse?.financial_diff_file && (
+                  {/* Validation Summary Report */}
+                  {showValidationSummary && uploadResponse && (
+                    <Paper className="p-3 mt-3 upload-paper border">
+                      <div className="d-flex justify-content-between mb-2 flex-wrap">
+                        <div>
+                          <strong>File:</strong> {file?.name || "Uploaded CSV"}
+                        </div>
+                        <div>
+                          <strong>Total:</strong> {uploadResponse.total_records ?? 0} |{" "}
+                          <strong>Valid:</strong> {uploadResponse.valid_records ?? 0} |{" "}
+                          <strong>Invalid:</strong> {uploadResponse.invalid_records ?? 0}
+                        </div>
+                      </div>
+
+                      <div className="mb-3">
+                        <strong>Duplicates:</strong> {uploadResponse.db_duplicates_count ?? 0} |{" "}
+                        <strong>Financial Differences:</strong>{" "}
+                        {uploadResponse.financial_difference_count ??
+                          uploadResponse.db_financial_difference_fields_count ??
+                          uploadResponse.db_financial_differences_count ??
+                          0}{" "}
+                        | <strong>TIN Invalid:</strong> {uploadResponse.tin_invalid_count ?? 0} |{" "}
+                        <span style={{ marginLeft: 8 }}>
+                          {(() => {
+                            const invalid = Number(uploadResponse.invalid_records ?? 0);
+                            const dup = Number(uploadResponse.db_duplicates_count ?? 0);
+                            const tinInvalid = Number(uploadResponse.tin_invalid_count ?? 0);
+                            const sum = dup + tinInvalid;
+                            const ruleFail = Math.max(0, invalid - sum);
+                            return (
+                              <>
+                                <strong>Rule validation Fail:</strong> {ruleFail ?? 0}
+                              </>
+                            );
+                          })()}
+                        </span>
+                      </div>
+
+                      {Number(uploadResponse.invalid_records ?? 0) > 0 &&
+                        uploadResponse.removed_data_file && (
+                          <div className="mb-3">
+                            <Button
+                              variant="outlined"
+                              color="warning"
+                              size="small"
+                              onClick={() => {
+                                downloadInvalidCsv(uploadResponse.removed_data_file);
+                              }}
+                            >
+                              Download Invalid Records CSV
+                            </Button>
+                          </div>
+                        )}
+
+                      {conflictCount !== null && (
+                        <>
+                          <div className="mb-1">
+                            <strong>Financial Differences (Pending Approval):</strong> {conflictCount}
+                          </div>
+                          {Number(conflictCount ?? 0) > 0 &&
+                            uploadResponse?.financial_difference_file && (
                               <div className="mb-1">
                                 <Button
-                                    component="a"
-                                    href={uploadResponse.financial_diff_file}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    variant="outlined"
-                                    color="info"
-                                    size="small"
+                                  variant="outlined"
+                                  color="info"
+                                  size="small"
+                                  onClick={() => {
+                                    downloadInvalidCsv(uploadResponse.financial_difference_file);
+                                  }}
                                 >
-                                  Download Financial Differences
+                                  Download Financial Difference CSV
                                 </Button>
                               </div>
                             )}
-                          </>
-                        )}
-                      </Paper>
-                    </>
+                        </>
+                      )}
+                    </Paper>
                   )}
-
 
                   {error && <Alert severity="error" className="mt-3">{error}</Alert>}
                   {info && <Alert severity="info" className="mt-3">{info}</Alert>}
 
-                  {/* Process button */}
+                  {/* Final Process Button */}
                   {showValidationSummary && uploadResponse && (
                     <div className="d-flex justify-content-end mt-3">
                       <Button
@@ -1373,11 +1354,10 @@ useEffect(() => {
                       </Button>
                     </div>
                   )}
-
                 </Paper>
               )}
 
-              {/* Merged Table */}
+              {/* Merged Audit Summary Table */}
               {showMergedTable && (
                 <Paper className="p-4 mt-3">
                   <Typography variant="h6" gutterBottom>
@@ -1403,48 +1383,6 @@ useEffect(() => {
                   />
 
                   <div className="d-flex gap-3 mt-3">
-                    {excelUrl !== "" && (
-                      <Button
-                        variant="contained"
-                        startIcon={<FileDownloadIcon />}
-                        style={{ backgroundColor: "#6A00FF" }}
-                        onClick={async () => {
-                          try {
-                            const baseName = String(excelUrl || "")
-                              .replace(/\\/g, "/")
-                              .split("/")
-                              .filter(Boolean)
-                              .pop();
-
-                            if (!baseName) throw new Error("Missing filename");
-
-                            const downloadUrl = `${API_BASE_URL}/${taxType}/download/${encodeURIComponent(baseName)}`;
-                            console.log("Download URL:", downloadUrl);
-
-                            const res = await axios.get(downloadUrl, {
-                              responseType: "blob",
-                              headers: getAuthHeaders(),
-                            });
-
-                            const link = document.createElement("a");
-                            link.href = window.URL.createObjectURL(new Blob([res.data]));
-                            link.download = baseName;
-                            link.click();
-                            return;
-                          } catch (e) {
-                            const msg =
-                              e?.response?.data?.message ||
-                              e?.response?.data?.error ||
-                              e?.message ||
-                              "Download failed.";
-                            await showAlert("error", "Download Failed", msg);
-                          }
-                        }}
-                      >
-                        Download
-                      </Button>
-                    )}
-
                     <Button variant="outlined" color="secondary" onClick={handleBack} disabled={controlsDisabled}>
                       Back
                     </Button>
@@ -1452,8 +1390,9 @@ useEffect(() => {
                 </Paper>
               )}
 
+              {/* Pipeline Processing Indicator */}
               {processing && (
-                <Paper className="p-3 upload-paper">
+                <Paper className="p-3 upload-paper mt-3">
                   <Typography variant="subtitle1" gutterBottom>
                     Processing Pipeline
                   </Typography>
@@ -1464,26 +1403,23 @@ useEffect(() => {
                 </Paper>
               )}
 
+              {/* Upload Validation Dialog */}
               <Dialog
                 open={validationDialogOpen}
                 onClose={(event, reason) => {
                   if (reason === "backdropClick" || reason === "escapeKeyDown") return;
                 }}
                 disableEscapeKeyDown
-                aria-labelledby="upload-validation-dialog-title"
-                aria-describedby="upload-validation-dialog-description"
                 maxWidth="xs"
                 fullWidth
               >
-                <DialogTitle id="upload-validation-dialog-title">
+                <DialogTitle>
                   {pipelineState.phase === "validation-complete" ? "Validation Complete" : "Validating uploaded file"}
                 </DialogTitle>
                 <DialogContent>
                   <Box
-                    id="upload-validation-dialog-description"
                     role="status"
                     aria-live="polite"
-                    aria-atomic="true"
                     sx={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", py: 1 }}
                   >
                     {pipelineState.phase === "validation-complete" ? (
@@ -1502,8 +1438,236 @@ useEffect(() => {
                   </Box>
                 </DialogContent>
               </Dialog>
-            </div>
 
+              {/* STANDALONE CREATE SEGMENTATION MODAL */}
+              <Dialog
+                open={isSegmentationModalOpen}
+                onClose={(event, reason) => {
+                  if (reason === "backdropClick" || reason === "escapeKeyDown") {
+                    if (segmentationState !== "SEGMENTATION_RUNNING") {
+                      handleCloseSegmentationModal();
+                    }
+                  }
+                }}
+                disableEscapeKeyDown={segmentationState === "SEGMENTATION_RUNNING"}
+                aria-labelledby="segmentation-dialog-title"
+                maxWidth="sm"
+                fullWidth
+              >
+                <DialogTitle
+                  id="segmentation-dialog-title"
+                  component="div"
+                  sx={{ borderBottom: "1px solid #e2e8f0", pb: 1, fontWeight: "bold", fontSize: "1.25rem" }}
+                >
+                  {segmentationState === "SEGMENTATION_RUNNING"
+                    ? "Creating Segmentation"
+                    : segmentationState === "SEGMENTATION_COMPLETED"
+                    ? "Segmentation Completed"
+                    : "Create Segmentation"}
+                </DialogTitle>
+
+                <DialogContent sx={{ pt: 3, overflowX: "hidden" }}>
+                  {/* State 1: Running Progress View */}
+                  {segmentationState === "SEGMENTATION_RUNNING" && (
+                    <Box sx={{ py: 2, textAlign: "center" }}>
+                      <Typography variant="body1" fontWeight="500" sx={{ mb: 2 }}>
+                        {segmentationMsg || "Validating historical data..."}
+                      </Typography>
+
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
+                        <Box sx={{ width: "100%" }}>
+                          <LinearProgress
+                            variant="determinate"
+                            value={Math.min(100, Math.max(0, segmentationProgress))}
+                            sx={{ height: 10, borderRadius: 5, backgroundColor: "#e2e8f0" }}
+                            aria-valuenow={segmentationProgress}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                          />
+                        </Box>
+                        <Typography variant="body2" fontWeight="bold" color="text.secondary">
+                          {Math.round(segmentationProgress)}%
+                        </Typography>
+                      </Box>
+
+                      <Typography variant="caption" color="text.secondary">
+                        {Math.round(segmentationProgress)}% Complete
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {/* State 2: In-Modal Validation / Job Error State (No Nested Modal!) */}
+                  {segmentationValidationError && segmentationState === "SEGMENTATION_FAILED" && (
+                    <Box className="modal-error-box">
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "#dc2626", mb: 1 }}>
+                        <WarningAmberIcon />
+                        <Typography variant="subtitle1" fontWeight="bold">
+                          Validation Failed
+                        </Typography>
+                      </Box>
+
+                      <Typography variant="body2" color="text.primary" sx={{ mb: 1.5 }}>
+                        Requirements: Three years of historical GST, SWT, and CIT data must be available in the database.
+                      </Typography>
+
+                      <Typography variant="body2" color="error.main" fontWeight="500">
+                        {segmentationValidationError.message}
+                      </Typography>
+
+                      {segmentationValidationError.missingYears &&
+                        segmentationValidationError.missingYears.length > 0 && (
+                          <Box sx={{ mt: 1.5 }}>
+                            <Typography variant="caption" fontWeight="bold" color="text.secondary">
+                              Missing Years:
+                            </Typography>
+                            <div className="missing-years-list">
+                              {segmentationValidationError.missingYears.map((year) => (
+                                <span key={year} className="missing-year-chip">
+                                  {year}
+                                </span>
+                              ))}
+                            </div>
+                          </Box>
+                        )}
+
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2 }}>
+                        Please upload the required historical data files and try again.
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {/* State 3: Completed Success View */}
+                  {segmentationState === "SEGMENTATION_COMPLETED" && (
+                    <Box sx={{ py: 3, textAlign: "center" }}>
+                      <CheckCircleOutlineIcon color="success" sx={{ fontSize: 56, mb: 1.5 }} />
+                      <Typography variant="h6" color="success.main" fontWeight="bold" sx={{ mb: 1 }}>
+                        Segmentation Completed!
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {segmentationMsg}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {/* State 4: Initial Input Form View */}
+                  {segmentationState === "SEGMENTATION_IDLE" && !segmentationValidationError && (
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5, pt: 1 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Select the tax parameter and assessment period to generate the segmentation.
+                      </Typography>
+
+                      <FormControl fullWidth size="small">
+                        <InputLabel id="seg-tax-label">Tax Parameter</InputLabel>
+                        <Select
+                          labelId="seg-tax-label"
+                          value={segTaxType}
+                          label="Tax Parameter"
+                          onChange={(e) => setSegTaxType(e.target.value)}
+                        >
+                          <MenuItem value="GST">GST</MenuItem>
+                          <MenuItem value="SWT">SWT</MenuItem>
+                          <MenuItem value="CIT">CIT</MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <LocalizationProvider dateAdapter={AdapterDayjs}>
+                        <Box sx={{ display: "flex", gap: 2, flexDirection: { xs: "column", sm: "row" } }}>
+                          <Box sx={{ flex: 1 }}>
+                            <label className="form-label fw-semibold small">Assessment Date: From</label>
+                            <DatePicker
+                              format="DD/MM/YYYY"
+                              value={segStartDate}
+                              onChange={(val) => setSegStartDate(val)}
+                              slotProps={{
+                                textField: {
+                                  fullWidth: true,
+                                  size: "small",
+                                  placeholder: "DD/MM/YYYY",
+                                },
+                              }}
+                            />
+                          </Box>
+
+                          <Box sx={{ flex: 1 }}>
+                            <label className="form-label fw-semibold small">To</label>
+                            <DatePicker
+                              format="DD/MM/YYYY"
+                              value={segEndDate}
+                              onChange={(val) => setSegEndDate(val)}
+                              slotProps={{
+                                textField: {
+                                  fullWidth: true,
+                                  size: "small",
+                                  placeholder: "DD/MM/YYYY",
+                                },
+                              }}
+                            />
+                          </Box>
+                        </Box>
+                      </LocalizationProvider>
+
+                      {segDateError && (
+                        <Alert severity="warning" sx={{ py: 0.5 }}>
+                          {segDateError}
+                        </Alert>
+                      )}
+                    </Box>
+                  )}
+                </DialogContent>
+
+                <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, borderTop: "1px solid #f1f5f9" }}>
+                  {segmentationState === "SEGMENTATION_COMPLETED" ? (
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={handleCloseSegmentationModal}
+                      sx={{ backgroundColor: "#6A00FF" }}
+                    >
+                      DONE
+                    </Button>
+                  ) : segmentationValidationError && segmentationState === "SEGMENTATION_FAILED" ? (
+                    <>
+                      <Button variant="outlined" color="inherit" onClick={handleCloseSegmentationModal}>
+                        CANCEL
+                      </Button>
+                      <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={() => {
+                          setSegmentationValidationError(null);
+                          setSegmentationState("SEGMENTATION_IDLE");
+                        }}
+                        sx={{ backgroundColor: "#6A00FF" }}
+                      >
+                        RETRY
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outlined"
+                        color="inherit"
+                        onClick={handleCloseSegmentationModal}
+                        disabled={segmentationState === "SEGMENTATION_RUNNING"}
+                      >
+                        CANCEL
+                      </Button>
+                      <Button
+                        variant="contained"
+                        color="secondary"
+                        onClick={handleStartSegmentation}
+                        disabled={segmentationState === "SEGMENTATION_RUNNING"}
+                        sx={{ backgroundColor: "#6A00FF", fontWeight: "bold" }}
+                      >
+                        {segmentationState === "SEGMENTATION_RUNNING"
+                          ? "PROCESSING..."
+                          : "START SEGMENTATION"}
+                      </Button>
+                    </>
+                  )}
+                </DialogActions>
+              </Dialog>
+            </div>
           </main>
         </div>
 
@@ -1512,12 +1676,3 @@ useEffect(() => {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
