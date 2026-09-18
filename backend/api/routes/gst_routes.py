@@ -13,6 +13,7 @@ import shutil
 import threading
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from utils.upload_logger import log_gst_upload
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -27,6 +28,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from config.db_config import get_mysql_engine
 from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, log_step
 from utils.auth_helper import get_authenticated_user_id, set_authenticated_user_id_for_context
+from utils.data_access import ownership_clause, authorize_run, is_global_admin
+from utils.artifact_storage import ArtifactStorageError, artifact_run_directory
+from utils.artifact_service import (
+    ArtifactAuthorizationError,
+    create_artifact,
+    mark_artifact_status,
+    resolve_artifact,
+    get_artifact_path,
+)
 from utils.file_security import FinalOutputSecurityError, materialize_output_to_tempfile, output_exists, sanitize_file_reference, sanitize_output_filename, secure_download_response, write_encrypted_output_file, write_encrypted_output_dataframe
 from utils.upload_security import UploadSecurityError, validate_upload_file
 from gst.gst_upload_hook import save_gst_justification_to_db
@@ -70,12 +80,13 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-def _save_validation_upload(file, tax_prefix: str):
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+def _save_validation_upload(file, tax_prefix: str, target_dir=None):
+    target_dir = target_dir or UPLOAD_FOLDER
+    os.makedirs(target_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = secure_filename(file.filename or "")
     saved_filename = f"{tax_prefix}_{timestamp}_{safe_name}"
-    saved_path = os.path.join(UPLOAD_FOLDER, saved_filename)
+    saved_path = os.path.join(target_dir, saved_filename)
     file.save(saved_path)
 
     ext = os.path.splitext(safe_name)[1].lower().lstrip(".")
@@ -86,6 +97,116 @@ def _save_validation_upload(file, tax_prefix: str):
         file_size_kb = None
 
     return saved_filename, saved_path, file_format, file_size_kb
+
+
+def _gst_artifact_directory(user_id, run_id, artifact_kind):
+    directory = artifact_run_directory(user_id, run_id, create=True) / str(artifact_kind)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _persist_gst_artifact(
+    source_path,
+    *,
+    user_id,
+    upload_id,
+    run_id,
+    logical_name,
+    artifact_kind,
+    engine=None,
+):
+    """Encrypt, register, and return one new GST artifact.
+
+    The source is always a current-run file. There is deliberately no fallback
+    to a legacy GST directory when registration or storage fails.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        raise FileNotFoundError(f"GST artifact source is unavailable: {logical_name}")
+    physical_name = f"{logical_name}.enc"
+    artifact = create_artifact(
+        user_id=user_id,
+        upload_id=upload_id,
+        run_id=run_id,
+        tax_type="GST",
+        logical_name=physical_name,
+        artifact_kind=artifact_kind,
+        status="pending",
+        engine=engine,
+    )
+    destination_dir = str(_gst_artifact_directory(user_id, run_id, artifact_kind))
+    try:
+        write_encrypted_output_file(source_path, destination_dir, logical_name)
+        mark_artifact_status(artifact["id"], "ready", engine=engine)
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+        return resolve_artifact(artifact["id"], engine=engine, authorize=False)
+    except Exception:
+        try:
+            mark_artifact_status(artifact["id"], "failed", engine=engine)
+        except Exception:
+            pass
+        raise
+
+
+def _persist_gst_dataframe_artifact(
+    dataframe,
+    *,
+    user_id,
+    upload_id,
+    run_id,
+    logical_name,
+    artifact_kind,
+    engine=None,
+    finalize=True,
+):
+    physical_name = f"{logical_name}.enc"
+    artifact = create_artifact(
+        user_id=user_id,
+        upload_id=upload_id,
+        run_id=run_id,
+        tax_type="GST",
+        logical_name=physical_name,
+        artifact_kind=artifact_kind,
+        status="pending",
+        engine=engine,
+    )
+    destination_dir = str(_gst_artifact_directory(user_id, run_id, artifact_kind))
+    try:
+        write_encrypted_output_dataframe(dataframe, destination_dir, logical_name)
+        if finalize:
+            mark_artifact_status(artifact["id"], "ready", engine=engine)
+        return resolve_artifact(artifact["id"], engine=engine, authorize=False)
+    except Exception:
+        try:
+            mark_artifact_status(artifact["id"], "failed", engine=engine)
+        except Exception:
+            pass
+        raise
+
+
+def _find_gst_upload_id(engine, filepath, user_id):
+    """Resolve the existing upload_log ownership row for a new GST run."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM upload_log
+                    WHERE filepath = :filepath
+                      AND user_id = :user_id
+                      AND UPPER(tax_type) = 'GST'
+                    ORDER BY uploaded_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"filepath": str(filepath), "user_id": user_id},
+            ).first()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 def _try_get_column_count_from_file(path: str) -> int:
@@ -486,7 +607,16 @@ def _allowed_file(filename):
     return filename.lower().endswith(('.csv', '.parquet'))
 
 
-def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestamped_copies=False, upload_history_id=None):
+def run_gst_preprocessing(
+    saved_path,
+    analyzer=None,
+    on_step=None,
+    make_timestamped_copies=False,
+    upload_history_id=None,
+    artifact_user_id=None,
+    artifact_run_id=None,
+    artifact_upload_id=None,
+):
     """
     Reusable GST preprocessing (single source of truth).
     Runs ONLY existing GST business flow:
@@ -503,7 +633,14 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
     original_dir = os.getcwd()
     gst_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'gst')
     gst_dir_abs = os.path.abspath(gst_dir)
-    public_output_dir = os.path.abspath(os.path.join(gst_dir_abs, 'final_output'))
+    if artifact_user_id is None or not artifact_run_id:
+        raise ArtifactStorageError("GST artifact storage context is required")
+
+    public_output_dir = str(_gst_artifact_directory(artifact_user_id, artifact_run_id, "validation"))
+    work_output_dir = public_output_dir
+    if analyzer is not None and getattr(analyzer, "output_dir", None):
+        work_output_dir = os.path.abspath(str(analyzer.output_dir))
+        os.makedirs(work_output_dir, exist_ok=True)
 
     sys.path.insert(0, gst_dir_abs)
     os.chdir(gst_dir_abs)
@@ -518,17 +655,7 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
             analyzer.data_dir = os.path.dirname(saved_path)
             analyzer.script_dir = gst_dir_abs
             analyzer.models_dir = os.path.join(analyzer.script_dir, 'models')
-            analyzer.output_dir = os.path.join(analyzer.script_dir, 'final_output')
-            # Use a per-request temp output dir to avoid concurrent overwrites of shared filenames.
-            # Final (public) outputs are still copied into `<tax>/final_output/` with unique names.
-            if upload_history_id:
-                try:
-                    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                    tmp_root = os.path.join(backend_dir, 'uploads', '_validation_tmp')
-                    os.makedirs(tmp_root, exist_ok=True)
-                    analyzer.output_dir = os.path.join(tmp_root, f'gst_{int(upload_history_id)}')
-                except Exception:
-                    analyzer.output_dir = os.path.join(analyzer.output_dir, 'tmp_validation')
+            analyzer.output_dir = work_output_dir
             os.makedirs(analyzer.output_dir, exist_ok=True)
         else:
             # If caller provided analyzer, still prefer explicit input.
@@ -537,10 +664,14 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
             except Exception:
                 pass
 
+        # The validator writes a few intermediate files relative to cwd.
+        # Point cwd at this run's private work directory, never gst/final_output.
+        os.chdir(analyzer.output_dir)
+
         if callable(on_step):
             on_step('started', 1, 'Column Standardization', None)
 
-        #  Delete stale output artifacts BEFORE this validation run starts.
+        # Delete stale output artifacts only inside this run's private directory.
         # NOTE: step1 generates `gst_standardized.csv` which step2 consumes, so cleanup
         # must run before step1 (not between step1 and step2).
         try:
@@ -787,24 +918,6 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
         # Totals must always be consistent:
         total_records = int(valid_records) + int(invalid_records)
 
-        # Copy log/CSV into unique filenames for this upload_history_id (optional, avoids any overwrites).
-        try:
-            if upload_history_id:
-                for src_name, dst_name in [
-                    ("gst_validation_log.txt", f"gst_validation_log_{upload_history_id}.txt"),
-                    ("gst_removed_data.csv", f"gst_removed_data_{upload_history_id}.csv"),
-                    ("gst_validated.csv", f"gst_validated_{upload_history_id}.csv"),
-                ]:
-                    src_path = os.path.join(analyzer.output_dir, src_name)
-                    dst_path = os.path.join(analyzer.output_dir, dst_name)
-                    if os.path.exists(src_path):
-                        try:
-                            shutil.copy2(src_path, dst_path)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
         # Primary source of truth for validation reasons: gst_validation_log.txt
         errors = []
         if invalid_records > 0 and os.path.exists(log_path):
@@ -958,41 +1071,43 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
         except Exception:
             pass
 
-        # Timestamped copies for validation endpoint (avoid overwriting static filenames)
-        validated_file_name = 'gst_validated.csv'
-        removed_file_name = 'gst_removed_data.csv'
-
-        # Always compute full absolute paths for API consumers (frontend/debug/download)
-        validated_file_full_path = None
-        removed_file_full_path = None
-
+        artifact_engine = get_mysql_engine()
+        artifact_upload_record_id = (
+            artifact_upload_id if artifact_upload_id is not None else upload_history_id
+        )
+        artifacts = []
         try:
-            os.makedirs(public_output_dir, exist_ok=True)
+            for source_name in (
+                "gst_standardized.csv",
+                "gst_validated.csv",
+                "gst_removed_data.csv",
+                "gst_cleaned_data.parquet",
+                "gst_removed_data.parquet",
+                "gst_validation_log.txt",
+            ):
+                source = os.path.join(output_dir, source_name)
+                if os.path.exists(source):
+                    artifacts.append(_persist_gst_artifact(
+                        source,
+                        user_id=artifact_user_id,
+                        upload_id=artifact_upload_record_id,
+                        run_id=artifact_run_id,
+                        logical_name=source_name,
+                        artifact_kind="validation",
+                        engine=artifact_engine,
+                    ))
+        finally:
+            try:
+                artifact_engine.dispose()
+            except Exception:
+                pass
 
-            if make_timestamped_copies:
-                stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-                if os.path.exists(validated_csv):
-                    validated_file_name = f'gst_validated_{stamp}.csv'
-                    validated_file_full_path = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                    write_encrypted_output_file(validated_csv, public_output_dir, validated_file_name)
-
-                if os.path.exists(removed_csv):
-                    removed_file_name = f'gst_removed_data_{stamp}.csv'
-                    removed_file_full_path = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                    write_encrypted_output_file(removed_csv, public_output_dir, removed_file_name)
-
-            # Fall back to static filenames when timestamped copies are not created.
-            if validated_file_full_path is None:
-                candidate = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                validated_file_full_path = candidate if output_exists(public_output_dir, validated_file_name) else None
-
-            if removed_file_full_path is None:
-                candidate = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                removed_file_full_path = candidate if output_exists(public_output_dir, removed_file_name) else None
-
-        except Exception as e:
-            print(f"[GST] Error creating timestamped copies: {e}")
+        validated_file_name = "gst_validated.csv"
+        removed_file_name = "gst_removed_data.csv"
+        validated_record = next((a for a in artifacts if a["logical_name"] == "gst_validated.csv.enc"), None)
+        removed_record = next((a for a in artifacts if a["logical_name"] == "gst_removed_data.csv.enc"), None)
+        validated_file_full_path = validated_record["storage_path"] if validated_record else None
+        removed_file_full_path = removed_record["storage_path"] if removed_record else None
 
         print(f"[GST] validated_file_full_path: {validated_file_full_path}")
         print(f"[GST] removed_file_full_path: {removed_file_full_path}")
@@ -1012,18 +1127,13 @@ def run_gst_preprocessing(saved_path, analyzer=None, on_step=None, make_timestam
             'validated_file_full_path': validated_file_full_path,
             'removed_data_file': removed_file_name,
             'removed_file_full_path': removed_file_full_path,
-            'output_dir': os.path.abspath(public_output_dir),
+            'output_dir': public_output_dir,
+            'artifacts': artifacts,
+            'artifact_run_id': artifact_run_id,
         }
 
     finally:
         os.chdir(original_dir)
-        try:
-            if upload_history_id and analyzer is not None and getattr(analyzer, "output_dir", None):
-                tmp_dir = os.path.abspath(str(analyzer.output_dir))
-                if os.path.basename(tmp_dir).startswith("gst_") and os.path.sep + "_validation_tmp" + os.path.sep in (os.path.sep + tmp_dir + os.path.sep):
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
 
 
 @gst_bp.route('/api/gst/validate', methods=['POST'])
@@ -1062,26 +1172,18 @@ def validate_gst():
     upload_saved_path = None
     file_format = None
     file_size_kb = None
-
-    gst_data_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'data')
-    )
-    os.makedirs(gst_data_dir, exist_ok=True)
-
-
-    saved_path_processing = os.path.join(gst_data_dir, processing_name)
+    artifact_run_id = str(uuid.uuid4())
+    artifact_input_dir = _gst_artifact_directory(user_id, artifact_run_id, "input")
 
     try:
-        upload_saved_filename, upload_saved_path, file_format, file_size_kb = _save_validation_upload(file, "gst")
+        upload_saved_filename, upload_saved_path, file_format, file_size_kb = _save_validation_upload(
+            file, "gst", target_dir=str(artifact_input_dir)
+        )
+        saved_path_processing = upload_saved_path
         try:
             file.stream.seek(0)
         except Exception:
             pass
-
-        try:
-            shutil.copyfile(upload_saved_path, saved_path_processing)
-        except Exception:
-            file.save(saved_path_processing)
 
         # Insert upload_history first so we can isolate outputs by upload_history_id (concurrency-safe).
         upload_history_id = None
@@ -1107,7 +1209,16 @@ def validate_gst():
             except Exception:
                 pass
 
-        result = run_gst_preprocessing(saved_path_processing, make_timestamped_copies=True, upload_history_id=upload_history_id)
+        if not upload_saved_path or not os.path.isfile(upload_saved_path):
+            raise RuntimeError("GST input artifact was not stored")
+
+        result = run_gst_preprocessing(
+            saved_path_processing,
+            make_timestamped_copies=True,
+            upload_history_id=upload_history_id,
+            artifact_user_id=user_id,
+            artifact_run_id=artifact_run_id,
+        )
         if not result.get('ok'):
             errors = result.get('errors') or []
             if not errors:
@@ -1149,6 +1260,8 @@ def validate_gst():
             'removed_data_file_path': result.get('removed_file_full_path'),
             'output_dir': result.get('output_dir'),
             'errors': result.get('errors', []),
+            'artifact_run_id': artifact_run_id,
+            'artifacts': result.get('artifacts', []),
         }
 
         payload['financial_difference_count'] = int(
@@ -1180,10 +1293,17 @@ def validate_gst():
                     try:
                         wrote_csv = _export_upload_conflicts_csv_from_db("GST", conflict_tins, temp_csv_path)
                         if wrote_csv and os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) > 0:
-                            write_encrypted_output_file(temp_csv_path, payload.get('output_dir'), logical_name)
-                            if output_exists(payload.get('output_dir'), logical_name):
-                                payload['financial_difference_file'] = logical_name
-                                payload['financial_difference_file_path'] = logical_name
+                            conflict_artifact = _persist_gst_artifact(
+                                temp_csv_path,
+                                user_id=user_id,
+                                upload_id=upload_history_id,
+                                run_id=artifact_run_id,
+                                logical_name=logical_name,
+                                artifact_kind='report',
+                            )
+                            payload.setdefault('artifacts', []).append(conflict_artifact)
+                            payload['financial_difference_file'] = logical_name
+                            payload['financial_difference_file_path'] = logical_name
                     finally:
                         try:
                             if os.path.exists(temp_csv_path):
@@ -1293,6 +1413,8 @@ def download_gst_file(filename):
     Secure download endpoint for files in backend/gst/final_output.
     """
     try:
+        if not is_global_admin():
+            return jsonify({"success": False, "message": "File ownership cannot be established"}), 403
         logical_name = sanitize_output_filename(filename, expected_prefix='gst_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'gst', 'final_output'))
@@ -1309,7 +1431,39 @@ def download_gst_file(filename):
     except Exception:
         return jsonify({"success": False, "message": "Unable to download file"}), 500
 
-def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_validated_file=False):
+
+@gst_bp.route('/api/gst/artifacts/<int:artifact_id>/download', methods=['GET'])
+@jwt_required()
+def download_gst_artifact(artifact_id):
+    """Download a newly registered GST artifact by server-side artifact ID."""
+    try:
+        artifact = resolve_artifact(artifact_id)
+        if str(artifact.get('tax_type', '')).upper() != 'GST':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        if str(artifact.get('status', '')).lower() != 'ready':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        path = get_artifact_path(artifact, authorize=False)
+        if not path.is_file():
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        return secure_download_response(str(path.parent), str(artifact['logical_name']))
+    except (ArtifactStorageError, FileNotFoundError, KeyError):
+        return jsonify({"success": False, "message": "Artifact not found"}), 404
+    except PermissionError:
+        return jsonify({"success": False, "message": "Permission denied"}), 403
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download artifact"}), 500
+
+def _run_gst_pipeline(
+    run_id,
+    saved_path,
+    date_from,
+    date_to,
+    current_user_id=None,
+    is_validated_file=False,
+    validated_artifact=None,
+    artifact_upload_id=None,
+    artifact_processing=False,
+):
     """
     Runs the GST pipeline in a background thread.
     Updates _run_status[run_id] at each step.
@@ -1317,12 +1471,31 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
     engine = None
     start_total = time.time()
     original_dir = os.getcwd()   # captured BEFORE try so finally can always restore it
+    input_artifact = None
 
     try:
         # Propagate authenticated user_id into this background thread (NULL-safe).
         set_authenticated_user_id_for_context(current_user_id)
 
-        if is_validated_file:
+        if validated_artifact is not None:
+            artifact_path_value = get_artifact_path(validated_artifact, authorize=False)
+            with materialize_output_to_tempfile(
+                str(artifact_path_value.parent),
+                str(validated_artifact['logical_name']),
+            ) as decrypted_input_path:
+                return _run_gst_pipeline(
+                    run_id,
+                    decrypted_input_path,
+                    date_from,
+                    date_to,
+                    current_user_id,
+                    is_validated_file=True,
+                    validated_artifact=None,
+                    artifact_upload_id=validated_artifact.get('upload_id'),
+                    artifact_processing=True,
+                )
+
+        if is_validated_file and not artifact_processing:
             gst_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'final_output'))
             logical_name = os.path.basename(str(saved_path or ''))
             if output_exists(gst_output_dir, logical_name):
@@ -1336,6 +1509,22 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                filepath=saved_path,
                status='Success',
                pipeline_run=True)
+        artifact_upload_id = (
+            artifact_upload_id
+            if artifact_upload_id is not None
+            else _find_gst_upload_id(engine, saved_path, current_user_id)
+        )
+        if not is_validated_file:
+            input_artifact = create_artifact(
+                user_id=current_user_id,
+                upload_id=artifact_upload_id,
+                run_id=run_id,
+                tax_type='GST',
+                logical_name=os.path.basename(saved_path),
+                artifact_kind='input',
+                status='ready',
+                engine=engine,
+            )
         _set_gst_run_status(run_id, {'status': 'running', 'step': 'Initialising', 'progress': 0})
 
         #  Shared preprocessing (same as /api/gst/validate)
@@ -1349,15 +1538,17 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         analyzer.input_file = saved_path
         analyzer.script_dir = os.path.abspath(gst_dir)
         analyzer.models_dir = os.path.join(analyzer.script_dir, 'models')
-        analyzer.output_dir = tempfile.mkdtemp(prefix=f'gst_{run_id}_')
+        run_root = artifact_run_directory(current_user_id, run_id, create=True)
+        run_tmp_dir = run_root / "tmp"
+        run_tmp_dir.mkdir(parents=True, exist_ok=True)
+        analyzer.output_dir = str(run_tmp_dir)
         analyzer.defer_db_insert = True
         os.makedirs(analyzer.output_dir, exist_ok=True)
     
         prev_records_out = None
-        final_output_dir = os.path.abspath(os.path.join(gst_dir, 'final_output'))
-        os.makedirs(final_output_dir, exist_ok=True)
-        export_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        justification_final_path = os.path.join(final_output_dir, f'gst_fraud_justification_{export_stamp}.csv')
+        result_output_dir = str(_gst_artifact_directory(current_user_id, run_id, "result"))
+        justification_name = 'gst_fraud_justification.csv'
+        justification_final_path = os.path.join(result_output_dir, justification_name)
 
         if is_validated_file:
             try:
@@ -1387,7 +1578,15 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                 else:
                     log_step(engine, run_id, 'GST', step_num, step_name, status='failed', elapsed_sec=elapsed, message='Step returned False')
 
-            pre = run_gst_preprocessing(saved_path, analyzer=analyzer, on_step=_on_pre_step)
+            pre = run_gst_preprocessing(
+                saved_path,
+                analyzer=analyzer,
+                on_step=_on_pre_step,
+                upload_history_id=None,
+                artifact_upload_id=artifact_upload_id,
+                artifact_user_id=current_user_id,
+                artifact_run_id=run_id,
+            )
             if not pre.get('ok'):
                 failed_step = 'Data Validation' if pre.get('step1_ok', True) else 'Column Standardization'
                 _set_gst_run_status(run_id, {
@@ -1444,9 +1643,17 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         else:
             raise FileNotFoundError('GST justification output not found for background DB insert')
 
-        logical_justification_name = f'gst_fraud_justification_{export_stamp}.csv'
-        write_encrypted_output_dataframe(just_df, final_output_dir, logical_justification_name)
-        justification_final_path = os.path.join(final_output_dir, logical_justification_name)
+        result_artifact = _persist_gst_dataframe_artifact(
+            just_df,
+            user_id=current_user_id,
+            upload_id=artifact_upload_id,
+            run_id=run_id,
+            logical_name=justification_name,
+            artifact_kind='result',
+            engine=engine,
+            finalize=False,
+        )
+        justification_final_path = os.path.join(result_output_dir, justification_name)
 
         total_rows = int(len(just_df.index))
         _set_gst_run_status(run_id, {
@@ -1475,6 +1682,10 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                 final_status = _run_status.get(run_id, {}).get('status')
                 if final_status not in {'completed', 'failed'}:
                     raise RuntimeError('GST insert worker exited without terminal status update')
+                if final_status == 'completed':
+                    mark_artifact_status(result_artifact['id'], 'ready', engine=insert_engine)
+                else:
+                    mark_artifact_status(result_artifact['id'], 'failed', engine=insert_engine)
             except BaseException as insert_error:
                 current_step = _run_status.get(run_id, {}).get('step', 'Database Insert')
                 _set_gst_run_status(run_id, {
@@ -1484,6 +1695,10 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                 }, force=True)
                 try:
                     log_run_failed(insert_engine or engine, run_id, 'GST', current_step, insert_error)
+                except Exception:
+                    pass
+                try:
+                    mark_artifact_status(result_artifact['id'], 'failed', engine=insert_engine or engine)
                 except Exception:
                     pass
             finally:
@@ -1524,6 +1739,14 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
                 shutil.rmtree(getattr(_analyzer, 'output_dir'), ignore_errors=True)
         except Exception:
             pass
+        if not is_validated_file and input_artifact is None:
+            try:
+                run_root = artifact_run_directory(current_user_id, run_id, create=False).resolve()
+                candidate = Path(str(saved_path or '')).resolve()
+                if run_root in candidate.parents and candidate.parent.name == 'input':
+                    candidate.unlink(missing_ok=True)
+            except Exception:
+                pass
         if engine:
             engine.dispose()
         
@@ -1532,19 +1755,41 @@ def _run_gst_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 #  POST /api/gst/run 
 
 @gst_bp.route('/api/gst/run', methods=['POST'])
+@jwt_required()
 def run_gst():
     file = request.files.get('file')
+    current_user_id = get_authenticated_user_id()
 
     # Backward compatible input parsing:
     # - Frontend usually sends multipart/form-data
     # - Some clients may send JSON
     validated_file = request.form.get('validated_file', '').strip()
-    if not validated_file:
+    validated_artifact_id = request.form.get('artifact_id', '').strip()
+    if not validated_file and not validated_artifact_id:
         try:
             payload = request.get_json(silent=True) or {}
             validated_file = str(payload.get('validated_file') or '').strip()
+            validated_artifact_id = str(payload.get('artifact_id') or '').strip()
         except Exception:
             validated_file = ''
+
+    validated_artifact = None
+    if validated_artifact_id:
+        if validated_file or file:
+            return jsonify({'error': 'Use either artifact_id or file'}), 400
+        try:
+            validated_artifact = resolve_artifact(int(validated_artifact_id))
+            if (
+                str(validated_artifact.get('tax_type', '')).upper() != 'GST'
+                or str(validated_artifact.get('artifact_kind', '')).lower() != 'validation'
+                or str(validated_artifact.get('status', '')).lower() != 'ready'
+                or not str(validated_artifact.get('logical_name', '')).lower().startswith('gst_validated')
+            ):
+                return jsonify({'error': 'Invalid GST validation artifact'}), 404
+            if not is_global_admin() and str(validated_artifact.get('user_id')) != str(current_user_id):
+                return jsonify({'error': 'Artifact access denied'}), 403
+        except (ValueError, ArtifactAuthorizationError, FileNotFoundError, KeyError):
+            return jsonify({'error': 'Artifact not found'}), 404
 
     date_from = request.form.get('date_from', '')
     date_to = request.form.get('date_to', '')
@@ -1559,7 +1804,13 @@ def run_gst():
     saved_path = None
     saved_name = None
 
-    if validated_file:
+    if validated_artifact is not None:
+        run_id = str(validated_artifact['run_id'])
+        saved_path = None
+        saved_name = str(validated_artifact['logical_name'])
+    elif validated_file:
+        if not is_global_admin():
+            return jsonify({'error': 'Validated file ownership cannot be established'}), 403
         try:
             safe_name = sanitize_file_reference(validated_file)
             from pathlib import Path
@@ -1581,26 +1832,27 @@ def run_gst():
         except UploadSecurityError as exc:
             return jsonify({'error': str(exc)}), 400
 
-    run_id = str(uuid.uuid4())
-    run_id = str(uuid.uuid4())
+    if validated_artifact is None:
+        run_id = str(uuid.uuid4())
 
-    if saved_path is None:
-        # Save uploaded file into gst/data/
-        gst_data_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'data')
-        )
-        os.makedirs(gst_data_dir, exist_ok=True)
-
+    if saved_path is None and validated_artifact is None:
         saved_name = validate_upload_file(file, allowed_extensions={'.csv', '.parquet'})
-        saved_path = os.path.join(gst_data_dir, saved_name)
+        input_dir = _gst_artifact_directory(current_user_id, run_id, "input")
+        saved_path = str(input_dir / saved_name)
         file.save(saved_path)
-
     _set_gst_run_status(run_id, {'status': 'queued', 'step': 'Queued', 'progress': 0}, force=True)
 
-    current_user_id = get_authenticated_user_id()
     thread = threading.Thread(
         target=_run_gst_pipeline,
-        args=(run_id, saved_path, date_from, date_to, current_user_id, bool(validated_file)),
+        args=(
+            run_id,
+            saved_path,
+            date_from,
+            date_to,
+            current_user_id,
+            bool(validated_file or validated_artifact is not None),
+            validated_artifact,
+        ),
         daemon=False
     )
     thread.start()
@@ -1707,8 +1959,11 @@ def _get_gst_status_from_db(run_id):
 #  GET /api/gst/status/<run_id> 
 
 @gst_bp.route('/api/gst/status/<run_id>', methods=['GET'])
+@jwt_required()
 def gst_status(run_id):
     status = _run_status.get(run_id)
+    if not authorize_run(get_mysql_engine(), run_id, 'GST', status):
+        return jsonify({'error': 'Run ID not found'}), 404
     if not status:
         status = _get_gst_status_from_db(run_id)
         if not status:
@@ -1734,9 +1989,12 @@ def gst_status(run_id):
 
 #  GET /api/gst/progress/<run_id>
 @gst_bp.route('/api/gst/progress/<run_id>', methods=['GET'])
+@jwt_required()
 def gst_progress(run_id):
     """Lightweight progress endpoint — returns progress % and current step only."""
     status = _run_status.get(run_id)
+    if not authorize_run(get_mysql_engine(), run_id, 'GST', status):
+        return jsonify({'error': 'Run ID not found'}), 404
     if not status:
         status = _get_gst_status_from_db(run_id)
         if not status:
@@ -1752,19 +2010,22 @@ def gst_progress(run_id):
 #  GET /api/gst/summary 
 
 @gst_bp.route('/api/gst/summary', methods=['GET'])
+@jwt_required()
 def gst_summary():
     """Overall fraud stats across ALL records — for dashboard KPI cards."""
     try:
         import pandas as pd
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("gst_fraud_justification")
         with engine.connect() as conn:
-            df = pd.read_sql('''
+            df = pd.read_sql(text(f'''
                 SELECT 
                     COUNT(*) as total_records,
                     SUM(predicted_fraud = 'Fraud') as fraud_count,
                     SUM(predicted_fraud = 'Non-Fraud') as non_fraud
                 FROM gst_fraud_justification
-            ''', conn)
+                WHERE {scope}
+            '''), conn, params=scope_params)
         engine.dispose()
 
         return jsonify(df.iloc[0].to_dict()), 200
@@ -1776,6 +2037,7 @@ def gst_summary():
 #  GET /api/gst/results 
 
 @gst_bp.route('/api/gst/results', methods=['GET'])
+@jwt_required()
 def gst_results():
     """Paginated GST results — for the data table view."""
     try:
@@ -1786,13 +2048,15 @@ def gst_results():
         offset   = (page - 1) * per_page
 
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("gst_fraud_justification")
         with engine.connect() as conn:
             df = pd.read_sql(
-                f'SELECT * FROM gst_fraud_justification LIMIT {per_page} OFFSET {offset}',
-                conn
+                text(f'SELECT * FROM gst_fraud_justification WHERE {scope} LIMIT :limit OFFSET :offset'),
+                conn, params={**scope_params, 'limit': per_page, 'offset': offset}
             )
             total_df = pd.read_sql(
-                'SELECT COUNT(*) as cnt FROM gst_fraud_justification', conn
+                text(f'SELECT COUNT(*) as cnt FROM gst_fraud_justification WHERE {scope}'), conn,
+                params=scope_params
             )
         engine.dispose()
 

@@ -833,6 +833,14 @@ useEffect(() => {
     };
 
     const taxTypeLower = String(taxType || "").toLowerCase();
+    const gstValidationArtifact = (uploadResponse?.artifacts || []).find(
+      (artifact) =>
+        taxTypeLower === "gst" &&
+        String(artifact?.tax_type || "").toUpperCase() === "GST" &&
+        String(artifact?.artifact_kind || "").toLowerCase() === "validation" &&
+        String(artifact?.status || "").toLowerCase() === "ready" &&
+        String(artifact?.logical_name || "").toLowerCase().startsWith("gst_validated")
+    );
     const swtValidationArtifact = (uploadResponse?.artifacts || []).find(
       (artifact) =>
         taxTypeLower === "swt" &&
@@ -842,10 +850,13 @@ useEffect(() => {
         String(artifact?.logical_name || "").toLowerCase().startsWith("swt_validated")
     );
     const validatedFileName = getValidatedFileName(uploadResponse);
+    if (taxTypeLower === "gst" && !gstValidationArtifact?.id) {
+      return setError("Validated GST artifact is missing. Please validate again.");
+    }
     if (taxTypeLower === "swt" && !swtValidationArtifact?.id) {
       return setError("Validated SWT artifact is missing. Please validate again.");
     }
-    if (taxTypeLower !== "swt" && !validatedFileName) {
+    if (taxTypeLower !== "gst" && taxTypeLower !== "swt" && !validatedFileName) {
       return setError("Validated file is missing. Please validate again.");
     }
 
@@ -863,7 +874,9 @@ useEffect(() => {
     }));
 
     const formData = new FormData();
-    if (taxTypeLower === "swt") {
+    if (taxTypeLower === "gst") {
+      formData.append("artifact_id", String(gstValidationArtifact.id));
+    } else if (taxTypeLower === "swt") {
       formData.append("artifact_id", String(swtValidationArtifact.id));
     } else {
       formData.append("validated_file", validatedFileName);

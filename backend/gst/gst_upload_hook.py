@@ -25,7 +25,7 @@ from utils.bulk_insert_utils import (
 )
 from utils.pipeline_logger import log_step
 from utils.database_locks import financial_data_lock
-from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
+from utils.file_security import write_encrypted_output_dataframe
 
 
 def _update_latest_gst_upload_batch_references(engine, upload_batch_id, user_id):
@@ -244,10 +244,8 @@ def save_gst_justification_to_db(
                     'upload_batch_id': upload_batch_id,
                     'user_id': user_id,
                 }
-                try:
-                    cleanup_final_output_directory('GST')
-                except Exception as cleanup_error:
-                    print(f"[FINAL_OUTPUT_CLEANUP][GST] cleanup failed after successful processing: {cleanup_error}")
+                # New GST runs use run-scoped artifact storage. Do not sweep the
+                # legacy shared gst/final_output directory here.
             except Exception as e:
                 print(f"  Warning: GST upload summary update failed: {e}")
     except Exception as e:

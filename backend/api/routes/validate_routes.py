@@ -21,6 +21,7 @@ import re
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from difflib import SequenceMatcher
 from datetime import datetime
@@ -29,7 +30,9 @@ from flask import Blueprint, request, jsonify
 
 from api.routes.gst_routes import run_gst_preprocessing
 from api.routes.swt_routes import run_swt_preprocessing
+from config.db_config import get_mysql_engine
 from utils.auth_helper import get_authenticated_user_id
+from utils.artifact_storage import artifact_run_directory
 from utils.file_security import write_encrypted_output_file
 from utils.upload_security import UploadSecurityError, validate_upload_file
 
@@ -1138,22 +1141,27 @@ VALIDATORS = {
 
 def _run_gst_validation():
     output_dir_override = None
+    artifact_user_id = get_authenticated_user_id()
+    artifact_run_id = str(uuid.uuid4())
     file = request.files.get('file')
     if not file or not file.filename:
         return jsonify({'valid': False, 'error': 'No file uploaded'}), 400
 
-    gst_data_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', '..', 'gst', 'data')
-    )
-    os.makedirs(gst_data_dir, exist_ok=True)
+    gst_data_dir = artifact_run_directory(artifact_user_id, artifact_run_id, create=True) / "input"
+    gst_data_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        saved_path, _saved_name = validate_upload_file(file, gst_data_dir, tax_type='GST')
+        saved_path, _saved_name = validate_upload_file(file, str(gst_data_dir), tax_type='GST')
     except UploadSecurityError as exc:
         return jsonify({'valid': False, 'error': str(exc)}), 400
 
     try:
-        result = run_gst_preprocessing(saved_path, make_timestamped_copies=True)
+        result = run_gst_preprocessing(
+            saved_path,
+            make_timestamped_copies=True,
+            artifact_user_id=artifact_user_id,
+            artifact_run_id=artifact_run_id,
+        )
         if not result.get('ok'):
             errors = result.get('errors') or []
             if not errors:
@@ -1182,6 +1190,8 @@ def _run_gst_validation():
             'removed_data_file_path': _logical_output_name(result.get('removed_file_full_path') or result.get('removed_data_file')),
             'output_dir': None,
             'errors': result.get('errors', []),
+            'artifact_run_id': artifact_run_id,
+            'artifacts': result.get('artifacts', []),
         }
 
         # Generate financial difference CSV (only when financial differences exist)
