@@ -832,8 +832,20 @@ useEffect(() => {
       return null;
     };
 
+    const taxTypeLower = String(taxType || "").toLowerCase();
+    const swtValidationArtifact = (uploadResponse?.artifacts || []).find(
+      (artifact) =>
+        taxTypeLower === "swt" &&
+        String(artifact?.tax_type || "").toUpperCase() === "SWT" &&
+        String(artifact?.artifact_kind || "").toLowerCase() === "validation" &&
+        String(artifact?.status || "").toLowerCase() === "ready" &&
+        String(artifact?.logical_name || "").toLowerCase().startsWith("swt_validated")
+    );
     const validatedFileName = getValidatedFileName(uploadResponse);
-    if (!validatedFileName) {
+    if (taxTypeLower === "swt" && !swtValidationArtifact?.id) {
+      return setError("Validated SWT artifact is missing. Please validate again.");
+    }
+    if (taxTypeLower !== "swt" && !validatedFileName) {
       return setError("Validated file is missing. Please validate again.");
     }
 
@@ -851,15 +863,17 @@ useEffect(() => {
     }));
 
     const formData = new FormData();
-    // IMPORTANT: run API expects the validated artifact name, not the raw uploaded file.
-    formData.append("validated_file", validatedFileName);
+    if (taxTypeLower === "swt") {
+      formData.append("artifact_id", String(swtValidationArtifact.id));
+    } else {
+      formData.append("validated_file", validatedFileName);
+    }
 
     // Required for processing
     formData.append("date_from", parsedStart.format("YYYY-MM-DD"));
     formData.append("date_to", parsedEnd.format("YYYY-MM-DD"));
 
     try {
-      const taxTypeLower = String(taxType || "").toLowerCase();
       const runApi = `${API_BASE_URL}/${taxTypeLower}/run`;
       console.log("Selected Tax Type:", taxType);
       console.log("Run API:", runApi);

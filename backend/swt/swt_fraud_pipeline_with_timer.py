@@ -482,6 +482,24 @@ class SWTPipelineOrchestrator:
             # Pass output and models dirs so scripts save to the right places
             import copy
             sub_env = copy.copy(os.environ)
+            backend_root = Path(
+                sub_env.get('RBA_BACKEND_ROOT') or Path(self.script_dir).parent
+            ).expanduser().resolve()
+            project_root = backend_root.parent
+            stable_python_paths = [str(project_root), str(backend_root), str(Path(self.script_dir).resolve())]
+            for raw_path in sub_env.get('PYTHONPATH', '').split(os.pathsep):
+                if not raw_path:
+                    continue
+                candidate = Path(raw_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = project_root / candidate
+                candidate = candidate.resolve()
+                if candidate.exists() and str(candidate) not in stable_python_paths:
+                    stable_python_paths.append(str(candidate))
+            venv_site_packages = backend_root / 'venv' / 'Lib' / 'site-packages'
+            if venv_site_packages.is_dir() and str(venv_site_packages) not in stable_python_paths:
+                stable_python_paths.append(str(venv_site_packages))
+            sub_env['PYTHONPATH'] = os.pathsep.join(stable_python_paths)
             sub_env['SWT_OUTPUT_DIR'] = str(self.output_dir.resolve())
             sub_env['SWT_MODELS_DIR'] = str(Path(self.script_dir) / 'models')
             sub_env['SWT_VALIDATED_INPUT_FILE'] = str(Path(self.input_file).expanduser().resolve())

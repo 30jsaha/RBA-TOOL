@@ -344,6 +344,14 @@ def create_fraud_justification_file(input_file=None, output_file=None, validated
     # This does not change fraud logic; it only enriches record identity fields.
     df = _ensure_taxpayer_name(df, validated_input_file=validated_input_file)
 
+    # Duplicate filtering may legitimately leave no records to process.  Stop
+    # the required pipeline stage explicitly before pandas.apply() turns the
+    # empty frame into a DataFrame assignment error.  The orchestrator will
+    # preserve its existing failed-stage behavior, while non-empty inputs keep
+    # the exact existing rules/model/explanation path below.
+    if df is None or df.empty:
+        raise RuntimeError("No valid SWT records remain after validation")
+
     # Step 1 — Business rules (vectorized, all rules captured per row)
     print("Applying rules (vectorized)...")
     df = apply_rules_vectorized(df)

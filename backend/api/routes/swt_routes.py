@@ -23,7 +23,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from config.db_config import get_mysql_engine
 from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, log_step
 from utils.auth_helper import get_authenticated_user_id
+from utils.data_access import ownership_clause, authorize_run, is_global_admin
 from utils.auth_helper import set_authenticated_user_id_for_context
+from utils.artifact_storage import ArtifactStorageError, artifact_run_directory
+from utils.artifact_service import (
+    ArtifactAuthorizationError,
+    create_artifact,
+    get_artifact_path,
+    mark_artifact_status,
+    resolve_artifact,
+)
 from utils.file_security import FinalOutputSecurityError, materialize_output_to_tempfile, output_exists, sanitize_file_reference, sanitize_output_filename, secure_download_response, write_encrypted_output_file, write_encrypted_output_dataframe
 from utils.upload_security import UploadSecurityError, validate_upload_file
 from swt.swt_upload_hook import save_swt_justification_to_db
@@ -42,6 +51,88 @@ BASE_DIR = os.path.abspath(
 
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+def _swt_artifact_directory(user_id, run_id, artifact_kind):
+    directory = artifact_run_directory(user_id, run_id, create=True) / str(artifact_kind)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _persist_swt_artifact(
+    source_path,
+    *,
+    user_id,
+    upload_id,
+    run_id,
+    logical_name,
+    artifact_kind,
+    engine=None,
+):
+    if not source_path or not os.path.isfile(source_path):
+        raise FileNotFoundError(f"SWT artifact source is unavailable: {logical_name}")
+    artifact = create_artifact(
+        user_id=user_id,
+        upload_id=upload_id,
+        run_id=run_id,
+        tax_type="SWT",
+        logical_name=f"{logical_name}.enc",
+        artifact_kind=artifact_kind,
+        status="pending",
+        engine=engine,
+    )
+    try:
+        write_encrypted_output_file(
+            source_path,
+            str(_swt_artifact_directory(user_id, run_id, artifact_kind)),
+            logical_name,
+        )
+        mark_artifact_status(artifact["id"], "ready", engine=engine)
+        return resolve_artifact(artifact["id"], engine=engine, authorize=False)
+    except Exception:
+        try:
+            mark_artifact_status(artifact["id"], "failed", engine=engine)
+        except Exception:
+            pass
+        raise
+
+
+def _persist_swt_dataframe_artifact(
+    dataframe,
+    *,
+    user_id,
+    upload_id,
+    run_id,
+    logical_name,
+    artifact_kind,
+    engine=None,
+    finalize=True,
+):
+    artifact = create_artifact(
+        user_id=user_id,
+        upload_id=upload_id,
+        run_id=run_id,
+        tax_type="SWT",
+        logical_name=f"{logical_name}.enc",
+        artifact_kind=artifact_kind,
+        status="pending",
+        engine=engine,
+    )
+    try:
+        write_encrypted_output_dataframe(
+            dataframe,
+            str(_swt_artifact_directory(user_id, run_id, artifact_kind)),
+            logical_name,
+        )
+        if finalize:
+            mark_artifact_status(artifact["id"], "ready", engine=engine)
+        return resolve_artifact(artifact["id"], engine=engine, authorize=False)
+    except Exception:
+        try:
+            mark_artifact_status(artifact["id"], "failed", engine=engine)
+        except Exception:
+            pass
+        raise
 
 
 def _save_validation_upload(file, tax_prefix: str):
@@ -460,6 +551,8 @@ def _export_upload_conflicts_csv_from_db(tax_type: str, conflict_tins, output_pa
 @jwt_required()
 def validate_swt():
     user_id = get_jwt_identity()
+    artifact_run_id = str(uuid.uuid4())
+    validation_output_dir = None
 
     file = request.files.get('file')
     if not file or not file.filename:
@@ -519,21 +612,18 @@ def validate_swt():
                 pass
 
         swt_dir_abs = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'swt'))
-        output_dir_run = None
-        if upload_history_id:
-            try:
-                backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                tmp_root = os.path.join(backend_dir, 'uploads', '_validation_tmp')
-                os.makedirs(tmp_root, exist_ok=True)
-                output_dir_run = os.path.join(tmp_root, f'swt_{int(upload_history_id)}')
-            except Exception:
-                output_dir_run = None
+        output_dir_run = str(
+            artifact_run_directory(user_id, artifact_run_id, create=True)
+            / 'validation_tmp'
+        )
+        validation_output_dir = output_dir_run
 
         result = run_swt_preprocessing(
             saved_path_processing,
             make_timestamped_copies=True,
             output_dir_override=output_dir_run,
             upload_history_id=upload_history_id,
+            cleanup_output_dir=False,
         )
         if not result.get('ok'):
             errors = result.get('errors') or []
@@ -592,6 +682,42 @@ def validate_swt():
 
             payload['validated_file_path'] = validated_file_path
             payload['removed_data_file_path'] = removed_data_file_path
+
+            payload['run_id'] = artifact_run_id
+            payload['artifacts'] = []
+            artifact_engine = get_mysql_engine()
+            try:
+                if validated_file_path and output_exists(output_dir, payload['validated_file']):
+                    with materialize_output_to_tempfile(output_dir, payload['validated_file']) as source_path:
+                        payload['artifacts'].append(_persist_swt_artifact(
+                            source_path,
+                            user_id=user_id,
+                            upload_id=upload_history_id,
+                            run_id=artifact_run_id,
+                            logical_name=payload['validated_file'],
+                            artifact_kind='validation',
+                            engine=artifact_engine,
+                        ))
+                if removed_data_file_path and output_exists(output_dir, payload['removed_data_file']):
+                    with materialize_output_to_tempfile(output_dir, payload['removed_data_file']) as source_path:
+                        payload['artifacts'].append(_persist_swt_artifact(
+                            source_path,
+                            user_id=user_id,
+                            upload_id=upload_history_id,
+                            run_id=artifact_run_id,
+                            logical_name=payload['removed_data_file'],
+                            artifact_kind='validation',
+                            engine=artifact_engine,
+                        ))
+            finally:
+                artifact_engine.dispose()
+
+            payload['artifacts'] = [dict(a) for a in payload['artifacts']]
+            payload['artifact_id'] = next(
+                (a.get('id') for a in payload['artifacts']
+                 if str(a.get('logical_name', '')).lower().startswith('swt_validated')),
+                None,
+            )
 
             print("[SWT VALIDATE] output_dir =", output_dir)
             print("[SWT VALIDATE] validated_file_path =", validated_file_path)
@@ -710,6 +836,11 @@ def validate_swt():
         try:
             if os.path.exists(saved_path_processing):
                 os.remove(saved_path_processing)
+        except Exception:
+            pass
+        try:
+            if validation_output_dir and os.path.basename(os.path.abspath(validation_output_dir)) == 'validation_tmp':
+                shutil.rmtree(validation_output_dir, ignore_errors=True)
         except Exception:
             pass
 
@@ -919,6 +1050,8 @@ def download_swt_file(filename):
     Secure download endpoint for files in backend/swt/final_output.
     """
     try:
+        if not is_global_admin():
+            return jsonify({"success": False, "message": "File ownership cannot be established"}), 403
         logical_name = sanitize_output_filename(filename, expected_prefix='swt_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'swt', 'final_output'))
@@ -935,7 +1068,29 @@ def download_swt_file(filename):
     except Exception:
         return jsonify({"success": False, "message": "Unable to download file"}), 500
 
-def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=False, output_dir_override=None, upload_history_id=None):
+
+@swt_bp.route('/api/swt/artifacts/<int:artifact_id>/download', methods=['GET'])
+@jwt_required()
+def download_swt_artifact(artifact_id):
+    """Download a newly registered SWT artifact by server-side artifact ID."""
+    try:
+        artifact = resolve_artifact(artifact_id)
+        if str(artifact.get('tax_type', '')).upper() != 'SWT':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        if str(artifact.get('status', '')).lower() != 'ready':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        path = get_artifact_path(artifact, authorize=False)
+        if not path.is_file():
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        return secure_download_response(str(path.parent), str(artifact['logical_name']))
+    except (ArtifactStorageError, FileNotFoundError, KeyError):
+        return jsonify({"success": False, "message": "Artifact not found"}), 404
+    except PermissionError:
+        return jsonify({"success": False, "message": "Permission denied"}), 403
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download artifact"}), 500
+
+def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=False, output_dir_override=None, upload_history_id=None, cleanup_output_dir=True):
     """
     SWT preprocessing for validation-only use.
 
@@ -1765,14 +1920,14 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                 stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 if os.path.exists(validated_csv):
                     validated_file_name = f'swt_validated_{stamp}.csv'
-                    os.makedirs(public_output_dir, exist_ok=True)
-                    validated_file_full_path = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-                    write_encrypted_output_file(validated_csv, public_output_dir, validated_file_name)
+                    os.makedirs(output_dir, exist_ok=True)
+                    validated_file_full_path = os.path.abspath(os.path.join(output_dir, validated_file_name))
+                    write_encrypted_output_file(validated_csv, output_dir, validated_file_name)
                 if os.path.exists(removed_csv) and invalid_records > 0:
                     removed_file_name = f'swt_removed_data_{stamp}.csv'
-                    os.makedirs(public_output_dir, exist_ok=True)
-                    removed_file_full_path = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-                    write_encrypted_output_file(removed_csv, public_output_dir, removed_file_name)
+                    os.makedirs(output_dir, exist_ok=True)
+                    removed_file_full_path = os.path.abspath(os.path.join(output_dir, removed_file_name))
+                    write_encrypted_output_file(removed_csv, output_dir, removed_file_name)
             except Exception:
                 validated_file_name = 'swt_validated.csv'
                 removed_file_name = 'swt_removed_data.csv'
@@ -1781,11 +1936,11 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
 
         # Fall back to static paths if timestamped copies weren't created.
         if validated_file_full_path is None:
-            candidate = os.path.abspath(os.path.join(public_output_dir, validated_file_name))
-            validated_file_full_path = candidate if output_exists(public_output_dir, validated_file_name) else None
+            candidate = os.path.abspath(os.path.join(output_dir, validated_file_name))
+            validated_file_full_path = candidate if output_exists(output_dir, validated_file_name) else None
         if removed_file_full_path is None:
-            candidate = os.path.abspath(os.path.join(public_output_dir, removed_file_name))
-            removed_file_full_path = candidate if output_exists(public_output_dir, removed_file_name) else None
+            candidate = os.path.abspath(os.path.join(output_dir, removed_file_name))
+            removed_file_full_path = candidate if output_exists(output_dir, removed_file_name) else None
 
         print("[SWT] validated_file_full_path:", validated_file_full_path)
         print("[SWT] removed_file_full_path:", removed_file_full_path)
@@ -1807,7 +1962,7 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
             'removed_data_file': removed_file_name,
             'validated_file_full_path': validated_file_full_path,
             'removed_file_full_path': removed_file_full_path,
-            'output_dir': os.path.abspath(public_output_dir),
+            'output_dir': os.path.abspath(output_dir),
         }
 
     except Exception as e:
@@ -1820,26 +1975,44 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
     finally:
         os.chdir(original_dir)
         try:
-            if upload_history_id and output_dir_override:
+            if cleanup_output_dir and output_dir_override:
                 tmp_dir = os.path.abspath(str(output_dir_override))
-                if os.path.basename(tmp_dir).startswith("swt_") and os.path.sep + "_validation_tmp" + os.path.sep in (os.path.sep + tmp_dir + os.path.sep):
+                if os.path.basename(tmp_dir) == "validation_tmp":
                     shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
 
 
-def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_validated_file=False):
+def _run_swt_pipeline(
+    run_id,
+    saved_path,
+    date_from,
+    date_to,
+    current_user_id=None,
+    is_validated_file=False,
+    validated_artifact=None,
+    artifact_upload_id=None,
+):
     engine = None
     start_total = time.time()
     original_dir = os.getcwd()
 
     try:
-        if is_validated_file:
-            swt_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'final_output'))
-            logical_name = os.path.basename(str(saved_path or ''))
-            if output_exists(swt_output_dir, logical_name):
-                with materialize_output_to_tempfile(swt_output_dir, logical_name) as decrypted_input_path:
-                    return _run_swt_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, is_validated_file=True)
+        if validated_artifact is not None:
+            artifact_path_value = get_artifact_path(validated_artifact, authorize=False)
+            with materialize_output_to_tempfile(
+                str(artifact_path_value.parent),
+                str(validated_artifact['logical_name']),
+            ) as decrypted_input_path:
+                return _run_swt_pipeline(
+                    run_id,
+                    decrypted_input_path,
+                    date_from,
+                    date_to,
+                    current_user_id,
+                    is_validated_file=True,
+                    artifact_upload_id=validated_artifact.get('upload_id'),
+                )
 
         print("=" * 100)
         print("PIPELINE START")
@@ -1956,12 +2129,22 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if just_df is None:
             raise RuntimeError('SWT current-run justification dataframe missing before background DB insert')
 
-        final_output_dir = os.path.abspath(os.path.join(swt_dir, 'final_output'))
-        os.makedirs(final_output_dir, exist_ok=True)
         export_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         logical_justification_name = f'swt_fraud_justification_{export_stamp}.csv'
-        write_encrypted_output_dataframe(just_df, final_output_dir, logical_justification_name)
-        justification_final_path = os.path.join(final_output_dir, logical_justification_name)
+        result_artifact = _persist_swt_dataframe_artifact(
+            just_df,
+            user_id=current_user_id,
+            upload_id=artifact_upload_id,
+            run_id=run_id,
+            logical_name=logical_justification_name,
+            artifact_kind='result',
+            engine=engine,
+            finalize=False,
+        )
+        justification_final_path = str(
+            _swt_artifact_directory(current_user_id, run_id, 'result')
+            / logical_justification_name
+        )
 
         total_rows = int(len(just_df.index))
         _run_status[run_id] = {
@@ -1974,22 +2157,45 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
             'total_rows': total_rows,
             'insert_percent': 0,
             'upload_batch_id': getattr(orchestrator, 'upload_batch_id', None),
+            'result_artifact_id': result_artifact['id'],
+            'result_artifact_status': 'pending',
         }
 
-        insert_thread = threading.Thread(
-            target=save_swt_justification_to_db,
-            kwargs={
-                'df': just_df,
-                'engine': None,
-                'upload_batch_id': getattr(orchestrator, 'upload_batch_id', None),
-                'uploaded_at': getattr(orchestrator, 'uploaded_at', None),
-                'run_id': run_id,
-                'status_store': _run_status,
-                'user_id': current_user_id,
-                'fallback_output_path': justification_final_path,
-            },
-            daemon=True,
-        )
+        def _insert_and_finalize_result():
+            try:
+                save_swt_justification_to_db(
+                    df=just_df,
+                    engine=None,
+                    upload_batch_id=getattr(orchestrator, 'upload_batch_id', None),
+                    uploaded_at=getattr(orchestrator, 'uploaded_at', None),
+                    run_id=run_id,
+                    status_store=_run_status,
+                    user_id=current_user_id,
+                    fallback_output_path=justification_final_path,
+                )
+                final_status = _run_status.get(run_id, {}).get('status')
+                mark_artifact_status(
+                    result_artifact['id'],
+                    'ready' if final_status == 'completed' else 'failed',
+                )
+                _run_status[run_id]['result_artifact_status'] = (
+                    'ready' if final_status == 'completed' else 'failed'
+                )
+            except BaseException as insert_error:
+                _run_status[run_id] = {
+                    **_run_status.get(run_id, {}),
+                    'status': 'failed',
+                    'step': 'Database Insert Failed',
+                    'error': str(insert_error),
+                    'user_id': current_user_id,
+                }
+                try:
+                    mark_artifact_status(result_artifact['id'], 'failed')
+                except Exception:
+                    pass
+                _run_status[run_id]['result_artifact_status'] = 'failed'
+
+        insert_thread = threading.Thread(target=_insert_and_finalize_result, daemon=False)
         print("[SWT PIPELINE] Starting insert thread")
         print("[SWT PIPELINE] Insert thread object id:", id(insert_thread))
         print("[SWT PIPELINE] Upload Batch:", getattr(orchestrator, 'upload_batch_id', None))
@@ -2021,13 +2227,42 @@ def _run_swt_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 def run_swt():
     file           = request.files.get('file')
     validated_file = request.form.get('validated_file', '').strip()
+    validated_artifact_id = request.form.get('artifact_id', '').strip()
+    if not validated_file and not validated_artifact_id:
+        payload = request.get_json(silent=True) or {}
+        validated_file = str(payload.get('validated_file') or '').strip()
+        validated_artifact_id = str(payload.get('artifact_id') or '').strip()
     date_from      = request.form.get('date_from', '')
     date_to        = request.form.get('date_to', '')
+
+    current_user_id = _normalize_authenticated_user_id(get_authenticated_user_id())
+    validated_artifact = None
+    if validated_artifact_id:
+        if validated_file or file:
+            return jsonify({'error': 'Use either artifact_id or file'}), 400
+        try:
+            validated_artifact = resolve_artifact(int(validated_artifact_id))
+            if (
+                str(validated_artifact.get('tax_type', '')).upper() != 'SWT'
+                or str(validated_artifact.get('artifact_kind', '')).lower() != 'validation'
+                or str(validated_artifact.get('status', '')).lower() != 'ready'
+                or not str(validated_artifact.get('logical_name', '')).lower().startswith('swt_validated')
+            ):
+                return jsonify({'error': 'Invalid SWT validation artifact'}), 404
+            if not is_global_admin() and str(validated_artifact.get('user_id')) != str(current_user_id):
+                return jsonify({'error': 'Artifact access denied'}), 403
+        except (ValueError, ArtifactAuthorizationError, FileNotFoundError, KeyError):
+            return jsonify({'error': 'Artifact not found'}), 404
 
     saved_path = None
     saved_name = None
 
-    if validated_file:
+    if validated_artifact is not None:
+        run_id = str(validated_artifact['run_id'])
+        saved_name = str(validated_artifact['logical_name'])
+    elif validated_file:
+        if not is_global_admin():
+            return jsonify({'error': 'Validated file ownership cannot be established'}), 403
         try:
             safe_name = sanitize_file_reference(validated_file)
             backend_root = Path(__file__).resolve().parents[2]
@@ -2048,10 +2283,10 @@ def run_swt():
         except UploadSecurityError as exc:
             return jsonify({'error': str(exc)}), 400
 
-    run_id = str(uuid.uuid4())
-    run_id = str(uuid.uuid4())
+    if validated_artifact is None:
+        run_id = str(uuid.uuid4())
 
-    if saved_path is None:
+    if saved_path is None and validated_artifact is None:
         swt_data_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..', 'swt', 'Data')
         )
@@ -2061,7 +2296,6 @@ def run_swt():
         saved_path = os.path.join(swt_data_dir, saved_name)
         file.save(saved_path)
 
-    current_user_id = _normalize_authenticated_user_id(get_authenticated_user_id())
     _run_status[run_id] = {'status': 'queued', 'step': 'Queued', 'progress': 0, 'user_id': current_user_id}
 
     print("=" * 100)
@@ -2076,8 +2310,8 @@ def run_swt():
 
     thread = threading.Thread(
         target=_run_swt_pipeline,
-        args=(run_id, saved_path, date_from, date_to, current_user_id, bool(validated_file)),
-        daemon=True
+        args=(run_id, saved_path, date_from, date_to, current_user_id, bool(validated_file or validated_artifact), validated_artifact),
+        daemon=False,
     )
     print("[SWT RUN] Starting pipeline thread")
     print("[SWT RUN] Pipeline thread object id:", id(thread))
@@ -2089,6 +2323,8 @@ def run_swt():
 @swt_bp.route('/api/swt/status/<run_id>', methods=['GET'])
 def swt_status(run_id):
     status = _run_status.get(run_id)
+    if not authorize_run(get_mysql_engine(), run_id, 'SWT', status):
+        return jsonify({'error': 'Run ID not found'}), 404
     if status:
         if status.get("user_id") is None:
             maybe_user_id = _normalize_authenticated_user_id(get_authenticated_user_id())
@@ -2221,14 +2457,16 @@ def swt_summary():
     try:
         import pandas as pd
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("swt_fraud_justification")
         with engine.connect() as conn:
-            df = pd.read_sql('''
+            df = pd.read_sql(text(f'''
                 SELECT 
                     COUNT(*) as total_records,
                     SUM(predicted_fraud = 'Fraud') as fraud_count,
                     SUM(predicted_fraud = 'Non-Fraud') as non_fraud
                 FROM swt_fraud_justification
-            ''', conn)
+                WHERE {scope}
+            '''), conn, params=scope_params)
         engine.dispose()
 
         return jsonify(df.iloc[0].to_dict()), 200
@@ -2250,13 +2488,15 @@ def swt_results():
         offset   = (page - 1) * per_page
 
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("swt_fraud_justification")
         with engine.connect() as conn:
             df = pd.read_sql(
-                f'SELECT * FROM swt_fraud_justification LIMIT {per_page} OFFSET {offset}',
-                conn
+                text(f'SELECT * FROM swt_fraud_justification WHERE {scope} LIMIT :limit OFFSET :offset'), conn,
+                params={**scope_params, 'limit': per_page, 'offset': offset}
             )
             total_df = pd.read_sql(
-                'SELECT COUNT(*) as cnt FROM swt_fraud_justification', conn
+                text(f'SELECT COUNT(*) as cnt FROM swt_fraud_justification WHERE {scope}'), conn,
+                params=scope_params
             )
         engine.dispose()
 
