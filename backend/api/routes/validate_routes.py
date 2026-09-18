@@ -1416,7 +1416,7 @@ def _run_swt_validation():
             pass
 
 
-def _run_cit_validation(output_dir_override=None):
+def _run_cit_validation(output_dir_override=None, public_output_dir_override=None):
     """
     Finalized CIT validation flow (modeled after GST/SWT):
       Upload -> Column Standardization -> Full Validation -> Split valid/invalid
@@ -1437,7 +1437,7 @@ def _run_cit_validation(output_dir_override=None):
     cit_dir_abs = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'cit'))
     cit_data_dir = os.path.join(cit_dir_abs, 'data')
     output_dir = output_dir_override or os.path.join(cit_dir_abs, 'final_output')
-    public_output_dir = os.path.join(cit_dir_abs, 'final_output')
+    public_output_dir = public_output_dir_override or os.path.join(cit_dir_abs, 'final_output')
     os.makedirs(cit_data_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(public_output_dir, exist_ok=True)

@@ -23,6 +23,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from config.db_config import get_mysql_engine
 from utils.pipeline_logger import log_run_start, log_run_end, log_run_failed, log_step
 from utils.auth_helper import get_authenticated_user_id, set_authenticated_user_id_for_context
+from utils.data_access import ownership_clause, authorize_run, is_global_admin
+from utils.artifact_storage import artifact_run_directory, ArtifactStorageError
+from utils.artifact_service import (
+    ArtifactAuthorizationError,
+    ArtifactNotFoundError,
+    create_artifact,
+    get_artifact_path,
+    mark_artifact_status,
+    resolve_artifact,
+)
 from cit.cit_upload_hook import save_cit_justification_to_db
 from cit.runtime_context import set_runtime_context, clear_runtime_context
 from utils.file_security import (
@@ -372,10 +382,54 @@ def _build_cit_run_files(base_dir: str, run_id: str):
     }
 
 
+def _register_cit_validation_artifact(
+    output_dir,
+    logical_name,
+    *,
+    user_id,
+    run_id,
+    upload_id=None,
+    engine=None,
+):
+    if not logical_name:
+        return None
+    encrypted_name = str(logical_name)
+    if not encrypted_name.lower().endswith('.enc'):
+        encrypted_name = f'{encrypted_name}.enc'
+    source_path = Path(output_dir) / encrypted_name
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        return None
+
+    artifact = create_artifact(
+        user_id=user_id,
+        upload_id=upload_id,
+        run_id=run_id,
+        tax_type='CIT',
+        logical_name=encrypted_name,
+        artifact_kind='validation',
+        status='pending',
+        engine=engine,
+    )
+    try:
+        mark_artifact_status(artifact['id'], 'ready', engine=engine)
+        return resolve_artifact(artifact['id'], engine=engine, authorize=False)
+    except Exception:
+        try:
+            with (engine or get_mysql_engine()).begin() as conn:
+                conn.execute(text('DELETE FROM generated_artifacts WHERE id = :id'), {'id': artifact['id']})
+        except Exception:
+            pass
+        raise
+
+
 @cit_bp.route('/api/cit/validate', methods=['POST'])
 @jwt_required()
 def validate_cit():
-    user_id = get_jwt_identity()
+    user_id = _normalize_authenticated_user_id(get_jwt_identity())
+    artifact_run_id = str(uuid.uuid4())
+    validation_output_dir = str(
+        artifact_run_directory(user_id, artifact_run_id, create=True) / 'validation'
+    )
 
     file = request.files.get('file')
     if not file or not file.filename:
@@ -446,20 +500,11 @@ def validate_cit():
             except Exception:
                 pass
 
-        # Isolate CIT validation outputs by upload_history_id to avoid concurrent overwrite of shared filenames.
-        output_dir_override = None
-        try:
-            if upload_history_id:
-                cit_dir_abs = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'cit'))
-                backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                tmp_root = os.path.join(backend_dir, 'uploads', '_validation_tmp')
-                os.makedirs(tmp_root, exist_ok=True)
-                output_dir_override = os.path.join(tmp_root, f"cit_{int(upload_history_id)}")
-        except Exception:
-            output_dir_override = None
-
         from api.routes.validate_routes import _run_cit_validation as _existing_run_cit_validation
-        out = _existing_run_cit_validation(output_dir_override=output_dir_override)
+        out = _existing_run_cit_validation(
+            output_dir_override=validation_output_dir,
+            public_output_dir_override=validation_output_dir,
+        )
 
         if isinstance(out, tuple):
             base_resp, status_code = out[0], out[1]
@@ -552,17 +597,57 @@ def validate_cit():
                 pass
 
         if status_code == 200 and isinstance(payload, dict) and payload:
+            artifact_engine = get_mysql_engine()
+            try:
+                artifacts = []
+                validated_artifact = _register_cit_validation_artifact(
+                    validation_output_dir,
+                    payload.get('validated_file'),
+                    user_id=user_id,
+                    run_id=artifact_run_id,
+                    upload_id=upload_history_id,
+                    engine=artifact_engine,
+                )
+                if validated_artifact:
+                    artifacts.append(validated_artifact)
+                removed_artifact = _register_cit_validation_artifact(
+                    validation_output_dir,
+                    payload.get('removed_data_file'),
+                    user_id=user_id,
+                    run_id=artifact_run_id,
+                    upload_id=upload_history_id,
+                    engine=artifact_engine,
+                )
+                if removed_artifact:
+                    artifacts.append(removed_artifact)
+                financial_artifact = _register_cit_validation_artifact(
+                    validation_output_dir,
+                    payload.get('financial_difference_file'),
+                    user_id=user_id,
+                    run_id=artifact_run_id,
+                    upload_id=upload_history_id,
+                    engine=artifact_engine,
+                )
+                if financial_artifact:
+                    artifacts.append(financial_artifact)
+            finally:
+                artifact_engine.dispose()
+
+            if not validated_artifact:
+                raise RuntimeError('CIT validation artifact was not created')
             payload['validated_file_path'] = payload.get('validated_file') if payload.get('validated_file') else None
             payload['removed_data_file_path'] = payload.get('removed_data_file') if payload.get('removed_data_file') else None
             payload['financial_difference_file_path'] = payload.get('financial_difference_file') if payload.get('financial_difference_file') else None
             payload['output_dir'] = None
+            payload['run_id'] = artifact_run_id
+            payload['artifacts'] = [dict(a) for a in artifacts]
+            payload['artifact_id'] = validated_artifact['id']
             return jsonify(payload), status_code
         return base_resp, status_code
 
     except Exception as e:
         print(f"[CIT_VALIDATE] wrapper failed: {e}")
         return jsonify({'valid': False, 'error': 'Could not read file'}), 400
-
 
 @cit_bp.route('/api/cit/download/<path:filename>', methods=['GET'])
 @jwt_required()
@@ -571,6 +656,8 @@ def download_cit_file(filename):
     Secure download endpoint for files in backend/cit/final_output.
     """
     try:
+        if not is_global_admin():
+            return jsonify({"success": False, "message": "File ownership cannot be established"}), 403
         logical_name = sanitize_output_filename(filename, expected_prefix='cit_')
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         output_dir = os.path.abspath(os.path.join(backend_dir, 'cit', 'final_output'))
@@ -587,16 +674,67 @@ def download_cit_file(filename):
     except Exception:
         return jsonify({"success": False, "message": "Unable to download file"}), 500
 
-def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=None, is_prevalidated: bool = False):
+
+@cit_bp.route('/api/cit/artifacts/<int:artifact_id>/download', methods=['GET'])
+@jwt_required()
+def download_cit_artifact(artifact_id):
+    """Download a registered CIT artifact by server-side artifact ID."""
+    try:
+        artifact = resolve_artifact(artifact_id)
+        if str(artifact.get('tax_type', '')).upper() != 'CIT':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        if str(artifact.get('status', '')).lower() != 'ready':
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        path = get_artifact_path(artifact, authorize=False)
+        if not path.is_file():
+            return jsonify({"success": False, "message": "Artifact not found"}), 404
+        return secure_download_response(str(path.parent), str(artifact['logical_name']))
+    except ArtifactAuthorizationError:
+        return jsonify({"success": False, "message": "Permission denied"}), 403
+    except (ArtifactStorageError, FileNotFoundError, KeyError):
+        return jsonify({"success": False, "message": "Artifact not found"}), 404
+    except Exception:
+        return jsonify({"success": False, "message": "Unable to download artifact"}), 500
+
+def _run_cit_pipeline(
+    run_id,
+    saved_path,
+    date_from,
+    date_to,
+    current_user_id=None,
+    is_prevalidated: bool = False,
+    validated_artifact=None,
+    materialized_artifact_input: bool = False,
+    artifact_context=None,
+):
     engine = None
     original_dir = os.getcwd()
 
     try:
-        if is_prevalidated:
+        artifact_context = artifact_context or validated_artifact
+        artifact_mode = artifact_context is not None
+        if validated_artifact is not None:
+            artifact_path = get_artifact_path(validated_artifact, authorize=False)
+            with materialize_output_to_tempfile(
+                str(artifact_path.parent), str(validated_artifact['logical_name'])
+            ) as decrypted_input_path:
+                return _run_cit_pipeline(
+                    run_id,
+                    decrypted_input_path,
+                    date_from,
+                    date_to,
+                    current_user_id,
+                    True,
+                    None,
+                    True,
+                    validated_artifact,
+                )
+
+        if is_prevalidated and not materialized_artifact_input:
             cit_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'cit', 'final_output'))
             logical_name = os.path.basename(str(saved_path or ''))
             with materialize_output_to_tempfile(cit_output_dir, logical_name) as decrypted_input_path:
-                return _run_cit_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, False)
+                return _run_cit_pipeline(run_id, decrypted_input_path, date_from, date_to, current_user_id, True, None, True)
 
         # Propagate authenticated user_id into this background thread (NULL-safe).
         current_user_id = _normalize_authenticated_user_id(current_user_id)
@@ -629,9 +767,14 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         validated_final_name = f'cit_validated_{export_stamp}.csv'
         removed_final_name = f'cit_removed_data_{export_stamp}.csv'
         justification_final_name = f'cit_fraud_with_justification_{export_stamp}.csv'
-        validated_final_path = os.path.join(final_output_dir, validated_final_name)
-        removed_final_path = os.path.join(final_output_dir, removed_final_name)
-        justification_final_path = os.path.join(final_output_dir, justification_final_name)
+        artifact_result_dir = None
+        if artifact_mode:
+            artifact_result_dir = str(artifact_run_directory(current_user_id, run_id, create=True) / 'result')
+            os.makedirs(artifact_result_dir, exist_ok=True)
+        persistent_output_dir = artifact_result_dir or final_output_dir
+        validated_final_path = os.path.join(persistent_output_dir, validated_final_name)
+        removed_final_path = os.path.join(persistent_output_dir, removed_final_name)
+        justification_final_path = os.path.join(persistent_output_dir, justification_final_name)
         set_runtime_context(
             current_input_file=os.path.abspath(saved_path),
             output_dir=run_files["output_dir"],
@@ -707,9 +850,9 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 
                 records_out = len(result) if hasattr(result, '__len__') else None
                 if step_num == 2 and not is_prevalidated and result is not None:
-                    write_encrypted_output_dataframe(result, final_output_dir, validated_final_name)
+                    write_encrypted_output_dataframe(result, persistent_output_dir, validated_final_name)
                     if os.path.exists(run_files["removed_file"]):
-                        write_encrypted_output_file(run_files["removed_file"], final_output_dir, removed_final_name)
+                        write_encrypted_output_file(run_files["removed_file"], persistent_output_dir, removed_final_name)
                 if step_num == 5:
                     final_df = result
                 log_step(engine, run_id, 'CIT', step_num, step_name,
@@ -731,7 +874,27 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
         if final_df is None:
             raise RuntimeError('CIT justification dataframe missing before background DB insert')
 
-        write_encrypted_output_dataframe(final_df, final_output_dir, justification_final_name)
+        result_artifact = None
+        if artifact_mode:
+            result_artifact = create_artifact(
+                user_id=current_user_id,
+                upload_id=artifact_context.get('upload_id') if artifact_context else None,
+                run_id=run_id,
+                tax_type='CIT',
+                logical_name=f'{justification_final_name}.enc',
+                artifact_kind='result',
+                status='pending',
+                engine=engine,
+            )
+        try:
+            write_encrypted_output_dataframe(final_df, persistent_output_dir, justification_final_name)
+        except Exception:
+            if result_artifact:
+                try:
+                    mark_artifact_status(result_artifact['id'], 'failed', engine=engine)
+                except Exception:
+                    pass
+            raise
 
         total_rows = int(len(final_df.index))
         _run_status[run_id] = {
@@ -745,22 +908,44 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
             'insert_percent': 0,
             'upload_batch_id': insert_batch_id,
             'run_id': run_id,
+            'result_artifact_id': result_artifact['id'] if result_artifact else None,
+            'result_artifact_status': 'pending' if result_artifact else None,
         }
 
-        insert_thread = threading.Thread(
-            target=save_cit_justification_to_db,
-            kwargs={
-                'df': final_df,
-                'engine': None,
-                'upload_batch_id': insert_batch_id,
-                'uploaded_at': insert_uploaded_at,
-                'run_id': run_id,
-                'status_store': _run_status,
-                'user_id': current_user_id,
-                'fallback_output_path': justification_final_path,
-            },
-            daemon=True,
-        )
+        def _insert_and_finalize():
+            try:
+                save_cit_justification_to_db(
+                    df=final_df,
+                    engine=None,
+                    upload_batch_id=insert_batch_id,
+                    uploaded_at=insert_uploaded_at,
+                    run_id=run_id,
+                    status_store=_run_status,
+                    user_id=current_user_id,
+                    fallback_output_path=justification_final_path,
+                    cleanup_shared_output=not artifact_mode,
+                )
+                if result_artifact:
+                    final_status = _run_status.get(run_id, {}).get('status')
+                    artifact_status = 'ready' if final_status == 'completed' else 'failed'
+                    mark_artifact_status(result_artifact['id'], artifact_status)
+                    _run_status[run_id]['result_artifact_status'] = artifact_status
+            except BaseException as insert_error:
+                _run_status[run_id] = {
+                    **_run_status.get(run_id, {}),
+                    'status': 'failed',
+                    'step': 'Database Insert Failed',
+                    'error': str(insert_error),
+                    'user_id': current_user_id,
+                    'run_id': run_id,
+                }
+                if result_artifact:
+                    try:
+                        mark_artifact_status(result_artifact['id'], 'failed')
+                    except Exception:
+                        pass
+
+        insert_thread = threading.Thread(target=_insert_and_finalize, daemon=False)
         insert_thread.start()
         return
 
@@ -792,6 +977,10 @@ def _run_cit_pipeline(run_id, saved_path, date_from, date_to, current_user_id=No
 def run_cit():
     file           = request.files.get('file')
     validated_file = request.form.get('validated_file', '').strip()
+    artifact_id_value = request.form.get('artifact_id', '').strip()
+    if not artifact_id_value:
+        body = request.get_json(silent=True) or {}
+        artifact_id_value = str(body.get('artifact_id') or '').strip()
     is_prevalidated = bool(validated_file)
     date_from      = request.form.get('date_from', '')
     date_to        = request.form.get('date_to', '')
@@ -799,7 +988,33 @@ def run_cit():
     saved_path = None
     saved_name = None
 
-    if validated_file:
+    validated_artifact = None
+    if artifact_id_value:
+        if file or validated_file:
+            return jsonify({'error': 'Choose artifact_id or file, not both'}), 400
+        try:
+            validated_artifact = resolve_artifact(int(artifact_id_value))
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid artifact_id'}), 400
+        except ArtifactAuthorizationError:
+            return jsonify({'error': 'Permission denied'}), 403
+        except (ArtifactNotFoundError, ArtifactStorageError, FileNotFoundError, KeyError):
+            return jsonify({'error': 'Artifact not found'}), 404
+        if str(validated_artifact.get('tax_type', '')).upper() != 'CIT':
+            return jsonify({'error': 'Artifact not found'}), 404
+        if str(validated_artifact.get('artifact_kind', '')).lower() != 'validation':
+            return jsonify({'error': 'Invalid validation artifact'}), 400
+        if str(validated_artifact.get('status', '')).lower() != 'ready':
+            return jsonify({'error': 'Artifact is not ready'}), 409
+        run_id = str(validated_artifact.get('run_id') or '')
+        if not run_id:
+            return jsonify({'error': 'Artifact run is missing'}), 400
+        saved_name = str(validated_artifact.get('logical_name') or '')
+        saved_path = str(get_artifact_path(validated_artifact, authorize=False))
+        is_prevalidated = True
+    elif validated_file:
+        if not is_global_admin():
+            return jsonify({'error': 'Validated file ownership cannot be established'}), 403
         try:
             safe_name = sanitize_file_reference(validated_file)
             backend_root = Path(__file__).resolve().parents[2]
@@ -820,8 +1035,8 @@ def run_cit():
         except UploadSecurityError as exc:
             return jsonify({'error': str(exc)}), 400
 
-    run_id = str(uuid.uuid4())
-    run_id = str(uuid.uuid4())
+    if not run_id:
+        run_id = str(uuid.uuid4())
 
     if saved_path is None:
         cit_data_dir = os.path.abspath(
@@ -841,7 +1056,7 @@ def run_cit():
 
     thread = threading.Thread(
         target=_run_cit_pipeline,
-        args=(run_id, saved_path, date_from, date_to, current_user_id, is_prevalidated),
+        args=(run_id, saved_path, date_from, date_to, current_user_id, is_prevalidated, validated_artifact),
         daemon=True
     )
     thread.start()
@@ -852,6 +1067,8 @@ def run_cit():
 @cit_bp.route('/api/cit/status/<run_id>', methods=['GET'])
 def cit_status(run_id):
     status = _run_status.get(run_id)
+    if not authorize_run(get_mysql_engine(), run_id, 'CIT', status):
+        return jsonify({'error': 'Run ID not found'}), 404
     if status:
         if status.get("user_id") is None:
             maybe_user_id = _normalize_authenticated_user_id(get_authenticated_user_id())
@@ -984,14 +1201,16 @@ def cit_summary():
     try:
         import pandas as pd
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("cit_fraud_justification")
         with engine.connect() as conn:
-            df = pd.read_sql('''
+            df = pd.read_sql(text(f'''
                 SELECT 
                     COUNT(*) as total_records,
                     SUM(predicted_fraud = 'Fraud') as fraud_count,
                     SUM(predicted_fraud = 'Non-Fraud') as non_fraud
                 FROM cit_fraud_justification
-            ''', conn)
+                WHERE {scope}
+            '''), conn, params=scope_params)
         engine.dispose()
 
         return jsonify(df.iloc[0].to_dict()), 200
@@ -1013,13 +1232,15 @@ def cit_results():
         offset   = (page - 1) * per_page
 
         engine = get_mysql_engine()
+        scope, scope_params = ownership_clause("cit_fraud_justification")
         with engine.connect() as conn:
             df = pd.read_sql(
-                f'SELECT * FROM cit_fraud_justification LIMIT {per_page} OFFSET {offset}',
-                conn
+                text(f'SELECT * FROM cit_fraud_justification WHERE {scope} LIMIT :limit OFFSET :offset'), conn,
+                params={**scope_params, 'limit': per_page, 'offset': offset}
             )
             total_df = pd.read_sql(
-                'SELECT COUNT(*) as cnt FROM cit_fraud_justification', conn
+                text(f'SELECT COUNT(*) as cnt FROM cit_fraud_justification WHERE {scope}'), conn,
+                params=scope_params
             )
         engine.dispose()
 

@@ -38,6 +38,7 @@ def save_cit_justification_to_db(
     status_store=None,
     user_id=None,
     fallback_output_path=None,
+    cleanup_shared_output=True,
 ):
     """
     Saves CIT fraud justification dataframe to MySQL table: cit_fraud_justification
@@ -207,10 +208,11 @@ def save_cit_justification_to_db(
                 'user_id': user_id,
                 'run_id': run_id,
             }
-            try:
-                cleanup_final_output_directory('CIT')
-            except Exception as cleanup_error:
-                print(f"[FINAL_OUTPUT_CLEANUP][CIT] cleanup failed after successful processing: {cleanup_error}")
+            if cleanup_shared_output:
+                try:
+                    cleanup_final_output_directory('CIT')
+                except Exception as cleanup_error:
+                    print(f"[FINAL_OUTPUT_CLEANUP][CIT] cleanup failed after successful processing: {cleanup_error}")
     except Exception as e:
         print(f"  Warning: Could not save CIT justification to DB: {e}")
         if run_id and status_store is not None:
