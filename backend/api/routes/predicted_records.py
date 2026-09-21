@@ -6,6 +6,7 @@ from ..extensions import db
 from .dashboard_common import get_date_filter
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from utils.data_access import ownership_clause
 
 bp = Blueprint("predicted_records", __name__, url_prefix="/api/predicted-records")
 
@@ -128,12 +129,15 @@ def _get_taxpayer_profile_params():
     if taxtype == "cit":
         params["start_year"] = start_year
         params["end_year"] = end_year
+    _scope, scope_params = ownership_clause("pr")
+    params.update(scope_params)
     return taxtype, params
 
 
 def _taxpayer_profile_base_query(taxtype):
+    ownership_scope, _ = ownership_clause("pr")
     if taxtype == "gst":
-        return """
+        return f"""
             SELECT
                 CAST(pr.tin AS CHAR(30)) AS tin,
                 COALESCE(NULLIF(TRIM(pr.taxpayer_name), ''), 'Unknown') AS taxpayer_name,
@@ -156,10 +160,11 @@ def _taxpayer_profile_base_query(taxtype):
                 COALESCE(pr.tax_account_number, 0) AS tax_account_number
             FROM gst_fraud_justification pr
             WHERE ((pr.tax_period_year * 100) + pr.tax_period_month) BETWEEN :start_ym AND :end_ym
+              AND {ownership_scope}
         """
 
     if taxtype == "swt":
-        return """
+        return f"""
             SELECT
                 CAST(pr.tin AS CHAR(30)) AS tin,
                 COALESCE(NULLIF(TRIM(pr.taxpayer_name), ''), 'Unknown') AS taxpayer_name,
@@ -183,9 +188,10 @@ def _taxpayer_profile_base_query(taxtype):
                 COALESCE(pr.tax_account_number, 0) AS tax_account_number
             FROM swt_fraud_justification pr
             WHERE ((pr.tax_period_year * 100) + pr.tax_period_month) BETWEEN :start_ym AND :end_ym
+              AND {ownership_scope}
         """
 
-    return """
+    return f"""
         SELECT
             CAST(pr.tin AS CHAR(30)) AS tin,
             COALESCE(NULLIF(TRIM(pr.taxpayer), ''), 'Unknown') AS taxpayer_name,
@@ -208,6 +214,7 @@ def _taxpayer_profile_base_query(taxtype):
             COALESCE(pr.tax_account_no, 0) AS tax_account_number
         FROM cit_fraud_justification pr
         WHERE pr.tax_period_year BETWEEN :start_year AND :end_year
+          AND {ownership_scope}
     """
 
 
@@ -251,6 +258,9 @@ def recent_uploads():
 
     params = {}
     where = []
+    ownership_scope, ownership_params = ownership_clause("y")
+    where.append(ownership_scope)
+    params.update(ownership_params)
 
     if start_ym is not None and end_ym is not None:
         where.append("((tax_period_year * 100) + COALESCE(tax_period_month, 12)) BETWEEN :start_ym AND :end_ym")
@@ -275,6 +285,7 @@ def recent_uploads():
             COALESCE(is_fraud, 0) AS is_fraud,
             tax_period_month,
             tax_period_year
+            , user_id
         FROM gst_fraud_justification
 
         UNION ALL
@@ -291,6 +302,7 @@ def recent_uploads():
             END AS is_fraud,
             tax_period_month,
             tax_period_year
+            , user_id
         FROM swt_fraud_justification
 
         UNION ALL
@@ -307,6 +319,7 @@ def recent_uploads():
             END AS is_fraud,
             NULL AS tax_period_month,
             tax_period_year
+            , user_id
         FROM cit_fraud_justification
     """
 
@@ -323,7 +336,8 @@ def recent_uploads():
             tax_account_number,
             is_fraud,
             tax_period_month,
-            tax_period_year
+            tax_period_year,
+            user_id
         FROM (
             {union_sql}
         ) x

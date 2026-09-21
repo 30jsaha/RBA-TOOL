@@ -5,6 +5,7 @@ from datetime import datetime
 import time
 from dateutil.relativedelta import relativedelta
 from ..extensions import cache, db
+from utils.data_access import current_user_id, is_global_admin, ownership_sql_literal
 
 bp = Blueprint("compliance", __name__, url_prefix="/api/compliance")
 
@@ -23,7 +24,8 @@ def _request_cache_args():
 
 
 def _cache_key(endpoint_name):
-    parts = [f"compliance:{endpoint_name}"]
+    scope = "admin" if is_global_admin() else f"user:{current_user_id()}"
+    parts = [f"compliance:{endpoint_name}", f"scope={scope}"]
     for key, value in _request_cache_args():
         parts.append(f"{key}={value}")
     return "|".join(parts)
@@ -68,11 +70,12 @@ def _period_filter_sql(alias="pr"):
         ({alias}.tax_period_year > :start_year OR ({alias}.tax_period_year = :start_year AND {alias}.tax_period_month >= :start_month))
         AND
         ({alias}.tax_period_year < :end_year OR ({alias}.tax_period_year = :end_year AND {alias}.tax_period_month <= :end_month))
+        AND {ownership_sql_literal(alias)}
     """
 
 
 def _year_filter_sql(alias="pr"):
-    return f"{alias}.tax_period_year BETWEEN :start_year AND :end_year"
+    return f"{alias}.tax_period_year BETWEEN :start_year AND :end_year AND {ownership_sql_literal(alias)}"
 
 
 def _registration_industry_sql(alias="trm"):
@@ -599,7 +602,7 @@ def compliance_kpi():
         WITH taxpayer_rollup AS (
             SELECT
                 pr.tin,
-                SUM(CASE WHEN {recv} IS NOT NULL AND {due} IS NOT NULL AND {recv} > {due} THEN 1 ELSE 0 END) AS delayed,
+                SUM(CASE WHEN {recv} IS NOT NULL AND {due} IS NOT NULL AND {recv} > {due} THEN 1 ELSE 0 END) AS delayed_count,
                 SUM(CASE WHEN {recv} IS NOT NULL AND {due} IS NOT NULL AND {recv} <= {due} THEN 1 ELSE 0 END) AS on_time,
                 {profit_loss_sql}
             FROM {base_table} pr
@@ -609,7 +612,7 @@ def compliance_kpi():
         SELECT
             COUNT(*) AS total_taxpayers,
             COUNT(*) AS filed,
-            SUM(taxpayer_rollup.delayed) AS delayed,
+            SUM(taxpayer_rollup.delayed_count) AS delayed_count,
             SUM(taxpayer_rollup.on_time) AS on_time,
             SUM(taxpayer_rollup.profit) AS profit,
             SUM(taxpayer_rollup.loss) AS loss
@@ -617,7 +620,11 @@ def compliance_kpi():
     """)
 
     try:
-        row = _execute_mapping_first(query, params) or {}
+        row = dict(_execute_mapping_first(query, params) or {})
+        # Keep the existing API field name while avoiding MariaDB's reserved
+        # alias in the SQL query itself.
+        if "delayed_count" in row:
+            row["delayed"] = row.pop("delayed_count")
         return success_response([dict(row)])
     except Exception as e:
         print("[COMPLIANCE API ERROR]", str(e))

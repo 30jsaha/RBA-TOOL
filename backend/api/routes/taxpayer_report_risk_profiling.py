@@ -6,6 +6,7 @@ from dateutil.relativedelta import relativedelta
 from ..extensions import db
 from .dashboard_common import get_date_filter
 from decimal import Decimal
+from utils.data_access import is_global_admin
 import io
 import csv
 
@@ -14,6 +15,15 @@ import csv
 #   BLUEPRINT — ALL ENDPOINTS IN THIS FILE
 # --------------------------------------------------------
 bp = Blueprint("taxpayer_report_risk_profiling", __name__, url_prefix="/api/taxpayer_report_risk_profiling")
+
+
+@bp.before_request
+def _protect_composite_taxpayer_reports():
+    # This report combines GST/SWT/CIT rows and registration data, but has no
+    # single persistent report/upload ownership key. Deny non-admin access
+    # rather than allowing a TIN/path parameter to select another user's data.
+    if not is_global_admin():
+        return jsonify({"success": False, "message": "Taxpayer reports are available to administrators only"}), 403
 
 
 # --------------------------------------------------------
@@ -609,7 +619,7 @@ def get_summary():
             FROM swt_fraud_justification pr
             WHERE TRIM(CAST(pr.tin AS CHAR(20))) = TRIM(:tin_norm)
               AND (pr.tax_period_year > :sy OR (pr.tax_period_year = :sy AND pr.tax_period_month >= :sm))
-              AND (pr.tax_period_year < :ey OR (pr.tax_period_year = :ey AND pr.tax_period_month <= :em))
+              AND (pr.tax_period_year < :ey OR (pr.t.ax_period_year = :ey AND pr.tax_period_month <= :em))
         """), {"tin_norm": tin_norm, "sy": start_y, "sm": start_m, "ey": end_y, "em": end_m}).fetchone()._mapping
 
         cit_years_row = db.session.execute(text("""

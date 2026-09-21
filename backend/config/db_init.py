@@ -60,6 +60,29 @@ DDL_STATEMENTS = {
         )
     """,
 
+    # Durable ownership and storage metadata for newly generated artifacts.
+    # This is additive; existing upload/result tables and files are untouched.
+    "generated_artifacts": """
+        CREATE TABLE IF NOT EXISTS generated_artifacts (
+            id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id         BIGINT NOT NULL,
+            upload_id       BIGINT NULL,
+            run_id          VARCHAR(128) NOT NULL,
+            tax_type        VARCHAR(10) NOT NULL,
+            logical_name    VARCHAR(255) NOT NULL,
+            storage_path    VARCHAR(1000) NOT NULL,
+            artifact_kind   VARCHAR(32) NOT NULL,
+            status          VARCHAR(20) NOT NULL DEFAULT 'created',
+            created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at      DATETIME NULL,
+            UNIQUE KEY uq_generated_artifact_run_name (run_id, logical_name),
+            KEY idx_generated_artifacts_user (user_id),
+            KEY idx_generated_artifacts_upload (upload_id),
+            KEY idx_generated_artifacts_run (run_id),
+            KEY idx_generated_artifacts_status (status)
+        )
+    """,
+
     # ── GST fraud justification (gst_upload_hook.py) ──────────
 
     "gst_fraud_justification": """

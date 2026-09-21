@@ -3,9 +3,18 @@ from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 
 from ..extensions import db
-from .dashboard_common import get_date_filter
+from .dashboard_common import get_date_filter as _base_get_date_filter
+from utils.data_access import ownership_sql_literal
+import re
 
 bp = Blueprint("risk_profiling", __name__, url_prefix="/api/risk-profiling")
+
+
+def get_date_filter(column_year="tax_period_year", column_month="tax_period_month"):
+    base_filter, params = _base_get_date_filter(column_year=column_year)
+    match = re.search(r"([A-Za-z_]\w*)\.", str(column_year))
+    alias = match.group(1) if match else ""
+    return f"({base_filter}) AND {ownership_sql_literal(alias)}", params
 
 
 @bp.get("/gst-sales-comparison")

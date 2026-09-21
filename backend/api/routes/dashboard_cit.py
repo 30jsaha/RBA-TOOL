@@ -4,7 +4,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from datetime import datetime
 from ..extensions import cache, db
-from .dashboard_common import get_date_filter
+from .dashboard_common import get_date_filter as _base_get_date_filter
+from utils.data_access import ownership_sql_literal, current_user_id, is_global_admin
+import re
 import csv
 from io import StringIO
 import time
@@ -28,6 +30,14 @@ CSV_HEADERS = [
     "segmentation",
     "year",
 ]
+
+
+def get_date_filter(column_year="tax_period_year"):
+    """Add source-row ownership to CIT dashboard date predicates."""
+    date_filter, params = _base_get_date_filter(column_year=column_year)
+    match = re.search(r"([A-Za-z_]\w*)\.", str(column_year))
+    alias = match.group(1) if match else ""
+    return f"({date_filter}) AND {ownership_sql_literal(alias)}", params
 
 
 # ============================================================
@@ -116,7 +126,8 @@ def _log_timing(endpoint_name, started_at):
 
 
 def _cache_key(endpoint_name, params, extra=""):
-    key = f"cit_dashboard:{endpoint_name}:{params['start_year']}:{params['end_year']}"
+    scope = "admin" if is_global_admin() else f"user:{current_user_id()}"
+    key = f"cit_dashboard:{endpoint_name}:scope={scope}:{params['start_year']}:{params['end_year']}"
     if extra:
         key = f"{key}:{extra}"
     return key

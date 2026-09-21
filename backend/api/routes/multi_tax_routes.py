@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from config.db_config import get_mysql_engine
 from utils.auth_helper import get_authenticated_user_id
+from utils.data_access import ownership_clause
 from utils.database_locks import financial_data_lock
 
 multi_tax_bp = Blueprint('multi_tax', __name__)
@@ -1334,8 +1335,9 @@ def get_multi_tax_results():
         if min_flags not in (2, 3):
             return jsonify({'error': 'min_flags must be 2 or 3'}), 400
 
-        filters = ['flagged_in_tax_types >= :min_flags']
-        params  = {'min_flags': min_flags, 'limit': limit}
+        ownership, ownership_params = ownership_clause("multi_tax_integration_results")
+        filters = [ownership, 'flagged_in_tax_types >= :min_flags']
+        params  = {**ownership_params, 'min_flags': min_flags, 'limit': limit}
 
         if year:
             filters.append('tax_period_year = :year');  params['year'] = int(year)
@@ -1393,13 +1395,14 @@ def get_multi_tax_summary():
     """Breakdown of TIN+year pairs flagged in 2 vs 3 tax types. Params: year"""
     try:
         year        = request.args.get('year', None)
+        ownership, ownership_params = ownership_clause("multi_tax_integration_results")
         year_filter = 'AND tax_period_year = :year' if year else ''
-        params      = {'year': int(year)} if year else {}
+        params      = {**ownership_params, **({'year': int(year)} if year else {})}
 
         sql = f"""
             SELECT flagged_in_tax_types, COUNT(*) AS tin_year_combinations
             FROM multi_tax_integration_results
-            WHERE flagged_in_tax_types >= 2 {year_filter}
+            WHERE {ownership} AND flagged_in_tax_types >= 2 {year_filter}
             GROUP BY flagged_in_tax_types
             ORDER BY flagged_in_tax_types DESC
         """
@@ -1553,7 +1556,8 @@ def get_integration_results():
         if issue and issue not in valid_issues:
             return jsonify({'error': f'issue must be one of {sorted(valid_issues)}'}), 400
 
-        filters, params = [], {'limit': limit}
+        ownership, ownership_params = ownership_clause("multi_tax_integration_results")
+        filters, params = [ownership], {**ownership_params, 'limit': limit}
         if tin:            filters.append('tin = :tin');                  params['tin']   = str(tin)
         if year:           filters.append('tax_period_year = :year');     params['year']  = int(year)
         if issue:          filters.append('multi_tax_issue = :issue');    params['issue'] = issue

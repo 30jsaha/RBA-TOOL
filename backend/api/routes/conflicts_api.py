@@ -7,6 +7,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import text
 
 from ..extensions import db
+from utils.data_access import is_global_admin
 
 
 bp = Blueprint("conflicts_admin", __name__, url_prefix="/api/admin/conflicts")
@@ -379,6 +380,11 @@ def list_pending_conflicts():
 
         where = "status = :status"
         params: Dict[str, Any] = {"status": _PENDING}
+        if "user_id" in cols and not is_global_admin():
+            where += " AND user_id = :__current_user_id"
+            params["__current_user_id"] = user_id
+        elif "user_id" not in cols and not is_global_admin():
+            return jsonify({"status": "success", "data": []}), 200
         if tax_type != "ALL":
             where += " AND UPPER(tax_type) = :tax_type"
             params["tax_type"] = tax_type
@@ -416,6 +422,11 @@ def conflicts_history():
 
         where = "status IN (:approved, :rejected)"
         params: Dict[str, Any] = {"approved": _APPROVED, "rejected": _REJECTED}
+        if "user_id" in cols and not is_global_admin():
+            where += " AND user_id = :__current_user_id"
+            params["__current_user_id"] = user_id
+        elif "user_id" not in cols and not is_global_admin():
+            return jsonify({"status": "success", "data": []}), 200
         if tax_type != "ALL":
             where += " AND UPPER(tax_type) = :tax_type"
             params["tax_type"] = tax_type
@@ -445,9 +456,16 @@ def approve_conflict(conflict_id: int):
     try:
         _ensure_upload_conflicts_audit_columns()
 
+        conflict_cols = _load_table_columns("upload_conflicts")
+        owner_sql = "1 = 1" if is_global_admin() else (
+            "user_id = :__current_user_id" if "user_id" in conflict_cols else "1 = 0"
+        )
+        conflict_params: Dict[str, Any] = {"id": int(conflict_id), "st": _PENDING}
+        if not is_global_admin():
+            conflict_params["__current_user_id"] = user_id
         conflict = db.session.execute(
-            text("SELECT * FROM upload_conflicts WHERE id = :id AND status = :st LIMIT 1"),
-            {"id": int(conflict_id), "st": _PENDING},
+            text(f"SELECT * FROM upload_conflicts WHERE id = :id AND status = :st AND {owner_sql} LIMIT 1"),
+            conflict_params,
         ).mappings().fetchone()
 
         if not conflict:
@@ -626,9 +644,16 @@ def reject_conflict(conflict_id: int):
     try:
         _ensure_upload_conflicts_audit_columns()
 
+        conflict_cols = _load_table_columns("upload_conflicts")
+        owner_sql = "1 = 1" if is_global_admin() else (
+            "user_id = :__current_user_id" if "user_id" in conflict_cols else "1 = 0"
+        )
+        conflict_params: Dict[str, Any] = {"id": int(conflict_id), "st": _PENDING}
+        if not is_global_admin():
+            conflict_params["__current_user_id"] = user_id
         conflict = db.session.execute(
-            text("SELECT id FROM upload_conflicts WHERE id = :id AND status = :st LIMIT 1"),
-            {"id": int(conflict_id), "st": _PENDING},
+            text(f"SELECT id FROM upload_conflicts WHERE id = :id AND status = :st AND {owner_sql} LIMIT 1"),
+            conflict_params,
         ).fetchone()
 
         if not conflict:

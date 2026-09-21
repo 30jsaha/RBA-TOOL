@@ -723,6 +723,30 @@ def download_recent_uploads_csv():
         FROM cit_fraud_justification
     """
 
+    # The export is assembled from three user-owned result tables.  Scope each
+    # branch before the UNION so a normal user cannot export another user's
+    # records merely by holding the reports.recent_uploads permission.
+    scope = _upload_history_authorization_scope()
+    if scope["is_global"]:
+        pass
+    elif scope["user_id"] is None:
+        union_sql = union_sql.replace(
+            "FROM gst_fraud_justification", "FROM gst_fraud_justification WHERE 1 = 0"
+        ).replace(
+            "FROM swt_fraud_justification", "FROM swt_fraud_justification WHERE 1 = 0"
+        ).replace(
+            "FROM cit_fraud_justification", "FROM cit_fraud_justification WHERE 1 = 0"
+        )
+    else:
+        union_sql = union_sql.replace(
+            "FROM gst_fraud_justification", "FROM gst_fraud_justification WHERE user_id = :current_user_id"
+        ).replace(
+            "FROM swt_fraud_justification", "FROM swt_fraud_justification WHERE user_id = :current_user_id"
+        ).replace(
+            "FROM cit_fraud_justification", "FROM cit_fraud_justification WHERE user_id = :current_user_id"
+        )
+        params["current_user_id"] = scope["user_id"]
+
     tax_filter_sql = ""
     if tax_type in ("gst", "swt", "cit"):
         tax_filter_sql = "WHERE tax_type = :tax_type"

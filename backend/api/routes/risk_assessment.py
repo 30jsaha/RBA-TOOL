@@ -12,6 +12,7 @@ from utils.sql_security import (
     get_fraud_justification_table,
     ALLOWED_TAX_TYPES
 )
+from utils.data_access import current_user_id, is_global_admin, ownership_sql_literal
 
 bp = Blueprint("risk_assessment", __name__, url_prefix="/api/risk-assessment")
 
@@ -98,7 +99,8 @@ def _request_cache_args():
 
 
 def _cache_key(endpoint_name, params=None):
-    parts = [f"risk_assessment:{endpoint_name}", f"taxtype={get_requested_taxtype('gst')}"]
+    scope = "admin" if is_global_admin() else f"user:{current_user_id()}"
+    parts = [f"risk_assessment:{endpoint_name}", f"scope={scope}", f"taxtype={get_requested_taxtype('gst')}"]
     if params:
         for key in sorted(params):
             parts.append(f"{key}={params[key]}")
@@ -180,11 +182,12 @@ def _period_filter_sql(alias="pr"):
         ({alias}.tax_period_year > :start_year OR ({alias}.tax_period_year = :start_year AND {alias}.tax_period_month >= :start_month))
         AND
         ({alias}.tax_period_year < :end_year OR ({alias}.tax_period_year = :end_year AND {alias}.tax_period_month <= :end_month))
+        AND {ownership_sql_literal(alias)}
     """
 
 
 def _year_filter_sql(alias="pr"):
-    return f"{alias}.tax_period_year >= :start_year AND {alias}.tax_period_year <= :end_year"
+    return f"{alias}.tax_period_year >= :start_year AND {alias}.tax_period_year <= :end_year AND {ownership_sql_literal(alias)}"
 
 
 def _swt_cit_fraud_sql(alias="pr", default_normal=False):

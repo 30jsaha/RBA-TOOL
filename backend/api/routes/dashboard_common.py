@@ -13,6 +13,7 @@ from sqlalchemy import text
 from ..extensions import db
 from .multi_tax_routes import refresh_multi_tax_tables
 from utils.auth_helper import get_authenticated_user_id
+from utils.data_access import is_global_admin
 
 bp = Blueprint("dashboard_common", __name__, url_prefix="/api/common-dashboard")
 download_bp = Blueprint("dashboard_common_download", __name__, url_prefix="/api/common/download-csv")
@@ -34,6 +35,25 @@ SUMMARY_REQUIRED_INDEXES = {
     "idx_multitax_dashboard_summary_year_tin": (False, ["tax_period_year", "tin"]),
 }
 SUMMARY_OBSOLETE_INDEX_NAMES = {"uq_summ_uty", "idx_summ_uy", "idx_summ_ut", "idx_summ_us", "idx_summ_upf", "idx_summ_uyt", "uq_summ_ty", "idx_summ_y", "idx_summ_t", "idx_summ_s", "idx_summ_pf", "idx_summ_yt"}
+
+
+def _require_common_dashboard_scope():
+    # multitax_dashboard_summary is a denormalized global table and the live
+    # schema has no ownership column. Do not expose it to non-admin users until
+    # the summary can be traced to an owned source row at query time.
+    if not is_global_admin():
+        return jsonify({"success": False, "message": "Common dashboard is available to administrators only"}), 403
+    return None
+
+
+@bp.before_request
+def _protect_common_dashboard():
+    return _require_common_dashboard_scope()
+
+
+@download_bp.before_request
+def _protect_common_dashboard_downloads():
+    return _require_common_dashboard_scope()
 
 def _table_exists(conn, table_name):
     return bool(conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name"), {"table_name": table_name}).scalar())

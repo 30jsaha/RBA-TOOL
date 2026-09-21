@@ -6,6 +6,7 @@ from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from ..extensions import cache, db
+from utils.data_access import ownership_sql_literal, current_user_id, is_global_admin
 import pandas as pd
 import os
 import csv
@@ -137,6 +138,7 @@ def _get_period_bounds():
 
 
 def _period_filter_sql(column_year="tax_period_year", column_month="tax_period_month"):
+    owner_prefix = column_year.rsplit(".", 1)[0] if "." in column_year else ""
     return f"""
     (
         (
@@ -154,6 +156,7 @@ def _period_filter_sql(column_year="tax_period_year", column_month="tax_period_m
                 AND {column_month} <= :end_month
             )
         )
+        AND {ownership_sql_literal(owner_prefix)}
     )
     """
 
@@ -172,8 +175,9 @@ def _log_timing(endpoint_name, started_at):
 
 
 def _cache_key(endpoint_name, params, extra=""):
+    scope = "admin" if is_global_admin() else f"user:{current_user_id()}"
     key = (
-        f"swt_dashboard:{endpoint_name}:"
+        f"swt_dashboard:{endpoint_name}:scope={scope}:"
         f"{params['start_year']}-{int(params['start_month']):02d}:"
         f"{params['end_year']}-{int(params['end_month']):02d}"
     )

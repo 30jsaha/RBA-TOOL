@@ -5,6 +5,7 @@ from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from ..extensions import cache, db
+from utils.data_access import ownership_sql_literal, current_user_id, is_global_admin
 import csv
 from io import BytesIO, StringIO
 import os
@@ -152,6 +153,7 @@ def _use_yearly_aggregation(params):
 
 
 def _period_filter_sql(column_year="tax_period_year", column_month="tax_period_month"):
+    owner_prefix = column_year.rsplit(".", 1)[0] if "." in column_year else ""
     return f"""
     (
         (
@@ -169,6 +171,7 @@ def _period_filter_sql(column_year="tax_period_year", column_month="tax_period_m
                 AND {column_month} <= :end_month
             )
         )
+        AND {ownership_sql_literal(owner_prefix)}
     )
     """
 
@@ -184,8 +187,9 @@ def _log_timing(endpoint_name, started_at):
 
 
 def _cache_key(endpoint_name, params):
+    scope = "admin" if is_global_admin() else f"user:{current_user_id()}"
     return (
-        f"gst_dashboard:{endpoint_name}:"
+        f"gst_dashboard:{endpoint_name}:scope={scope}:"
         f"{params['start_year']}-{params['start_month']}:"
         f"{params['end_year']}-{params['end_month']}"
     )
@@ -500,6 +504,7 @@ def dashboard_data():
                 SUM(COALESCE(ag.gst_refundable, 0)) AS total_gst_refundable
             FROM gst_fraud_justification ag
             WHERE ag.tax_period_year BETWEEN :start_year AND :end_year
+              AND {ownership_sql_literal("ag")}
         """)
 
         payload = _cached_json(
