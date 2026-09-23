@@ -131,8 +131,9 @@ def standardize_columns(df):
     
     df.columns = final_columns
     
-    # Drop completely empty columns if any
-    df = df.dropna(axis=1, how='all')
+    # Keep normalized source columns even when an older source schema contains
+    # a field but every value is null.  The existing aggregation formulas use
+    # these structurally present columns by name.
     
     print(f"Standardized DataFrame shape: {df.shape}")
     print(f"Number of columns: {len(df.columns)}")
