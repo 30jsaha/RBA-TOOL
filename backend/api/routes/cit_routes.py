@@ -239,7 +239,7 @@ def _try_insert_validation_errors(engine, upload_validation_summary_id, upload_h
                     """
                     INSERT INTO upload_validation_errors
                         (upload_validation_summary_id, upload_history_id, user_id, file_type,
-                         row_number, tin, column_name, reason, created_at)
+                         `row_number`, tin, column_name, reason, created_at)
                     VALUES
                         (:upload_validation_summary_id, :upload_history_id, :user_id, :file_type,
                          :row_number, :tin, :column_name, :reason, NOW())
