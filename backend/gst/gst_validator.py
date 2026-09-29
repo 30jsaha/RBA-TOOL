@@ -1,7 +1,6 @@
 # gst_validator.py
 import pandas as pd
 import logging
-from datetime import datetime
 from collections import defaultdict
 from utils.auth_helper import get_authenticated_user_id
 
@@ -846,16 +845,9 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
             # Never block validation if de-dup fails
             df_work = df_work.drop(columns=["_dedup_key"], errors="ignore")
 
-        now_ts = datetime.now()
         for c in existing_cols:
             if c not in df_work.columns:
-                if c in ("created_at", "updated_at"):
-                    df_work[c] = now_ts
-                else:
-                    df_work[c] = None
-            elif c in ("created_at", "updated_at"):
-                df_work[c] = df_work[c].fillna(now_ts)
-
+                df_work[c] = None
         df_work = df_work[[c for c in existing_cols if c in df_work.columns]]
         df_work.to_sql(table_name, con=engine, if_exists="append", index=False)
 
@@ -1240,16 +1232,9 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                         ))
                                         conf_cols = [row[0] for row in cols_res]
                                     current_user_id = get_authenticated_user_id()
-                                    now_ts = datetime.now()
                                     for c in conf_cols:
                                         if c not in to_ins.columns:
-                                            if c in ("created_at", "updated_at"):
-                                                to_ins[c] = now_ts
-                                            else:
-                                                to_ins[c] = None
-                                        elif c in ("created_at", "updated_at"):
-                                            to_ins[c] = to_ins[c].fillna(now_ts)
-
+                                            to_ins[c] = None
                                     if "user_id" in conf_cols:
                                         to_ins["user_id"] = current_user_id
 
