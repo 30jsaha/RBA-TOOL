@@ -231,7 +231,7 @@ def _try_insert_validation_errors(engine, upload_validation_summary_id, upload_h
                     """
                     INSERT INTO upload_validation_errors
                         (upload_validation_summary_id, upload_history_id, user_id, file_type,
-                         row_number, tin, column_name, reason, created_at)
+                         `row_number`, tin, column_name, reason, created_at)
                     VALUES
                         (:upload_validation_summary_id, :upload_history_id, :user_id, :file_type,
                          :row_number, :tin, :column_name, :reason, NOW())
@@ -253,7 +253,7 @@ def _try_fetch_validation_errors(engine, upload_validation_summary_id):
             res = conn.execute(
                 text(
                     """
-                    SELECT row_number, tin, column_name, reason
+                    SELECT `row_number`, tin, column_name, reason
                     FROM upload_validation_errors
                     WHERE upload_validation_summary_id = :upload_validation_summary_id
                     ORDER BY id ASC
@@ -1569,10 +1569,16 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                                                         "ORDER BY ORDINAL_POSITION"
                                                     ))
                                                     conf_cols = [row[0] for row in cols_res]
-                                                current_user_id = get_authenticated_user_id()
+                                                now_ts = datetime.now()
                                                 for c in conf_cols:
                                                     if c not in to_ins.columns:
-                                                        to_ins[c] = None
+                                                        if c in ("created_at", "updated_at"):
+                                                            to_ins[c] = now_ts
+                                                        else:
+                                                            to_ins[c] = None
+                                                    elif c in ("created_at", "updated_at"):
+                                                        to_ins[c] = to_ins[c].fillna(now_ts)
+
                                                 if "user_id" in conf_cols:
                                                     to_ins["user_id"] = current_user_id
 
