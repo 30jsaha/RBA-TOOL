@@ -971,6 +971,8 @@ def sales_cogs_details():
 
     try:
         taxpayer_name_sql = _cit_taxpayer_name_sql()
+        agg_cit_join_sql = _tin_join_sql("pr.tin", "ac.tin")
+        tin_registration_join_sql = _tin_join_sql("TRIM(pr.tin)", "TRIM(tr.tin)")
         rows = db.session.execute(
             text("""
                 SELECT
@@ -981,14 +983,18 @@ def sales_cogs_details():
                     COALESCE(NULLIF(TRIM(tr.enterpriseactivity), ''), NULL) AS sector
                 FROM cit_fraud_justification pr
                 LEFT JOIN agg_cit ac
-                    ON {_tin_join_sql("pr.tin", "ac.tin")}
+                    ON {agg_cit_join_sql}
                     AND pr.tax_period_year = ac.tax_period_year
                 LEFT JOIN tin_registration_mst tr
-                    ON {_tin_join_sql("TRIM(pr.tin)", "TRIM(tr.tin)")}
+                    ON {tin_registration_join_sql}
                 WHERE pr.tax_period_year = :year
                 ORDER BY gross_sales DESC
                 LIMIT :limit
-            """.format(taxpayer_name_sql=taxpayer_name_sql)),
+            """.format(
+                taxpayer_name_sql=taxpayer_name_sql,
+                agg_cit_join_sql=agg_cit_join_sql,
+                tin_registration_join_sql=tin_registration_join_sql,
+            )),
             {"year": year, "limit": limit}
         ).mappings().all()
 
@@ -1002,8 +1008,13 @@ def sales_cogs_details():
 
         return jsonify({"success": True, "data": data})
 
-    except Exception as exc:
-        return jsonify({"success": False, "message": str(exc)}), 500
+    except Exception:
+        current_app.logger.exception(
+            "sales_cogs_details failed for year=%s limit=%s",
+            year,
+            limit,
+        )
+        return jsonify({"success": False, "message": "Failed to load sales vs COGS details."}), 500
 
 # ============================================================
 # Province by Fraud Risk
@@ -1030,11 +1041,11 @@ _CIT_BASE_QUERY = """
         pr.tax_period_year
     FROM cit_fraud_justification pr
     LEFT JOIN agg_cit ac
-        ON {_tin_join_sql("pr.tin", "ac.tin")}
+        ON {agg_cit_join_sql}
         AND pr.tax_period_year = ac.tax_period_year
-    LEFT JOIN tin_registration_mst tr ON {_tin_join_sql("TRIM(pr.tin)", "TRIM(tr.tin)")}
+    LEFT JOIN tin_registration_mst tr ON {tin_registration_join_sql}
     LEFT JOIN taxpayer_segmentation_master sm
-        ON {_tin_join_sql("sm.tin", "CAST(pr.tin AS CHAR(50))")}
+        ON {segmentation_join_sql}
     WHERE ({date_filter})
     {extra_filter}
     ORDER BY pr.tax_period_year, pr.tin
@@ -1052,6 +1063,9 @@ def _cit_base_query(extra_filter=""):
         extra_filter=extra_filter,
         date_filter=date_filter,
         taxpayer_name_sql=_cit_taxpayer_name_sql(),
+        agg_cit_join_sql=_tin_join_sql("pr.tin", "ac.tin"),
+        tin_registration_join_sql=_tin_join_sql("TRIM(pr.tin)", "TRIM(tr.tin)"),
+        segmentation_join_sql=_tin_join_sql("sm.tin", "CAST(pr.tin AS CHAR(50))"),
     ))
 
 

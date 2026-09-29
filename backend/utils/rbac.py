@@ -18,6 +18,7 @@ PATH_PERMISSION_RULES = [
     ("/api/invalid-tins", ("settings.invalid_tins",)),
     ("/api/tin/sync-missing", ("upload_tin_registration",)),
     ("/api/upload-tin-reg", ("upload_tin_registration",)),
+    ("/api/tin-master", ("upload_tin_registration",)),
     ("/api/predicted-records/recent-uploads", ("reports.recent_uploads",)),
     ("/api/predicted-records/all-tax-records", ("reports.taxpayer_profile",)),
     ("/api/predicted-records/taxpayer-history", ("reports.taxpayer_profile",)),

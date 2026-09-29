@@ -4,6 +4,7 @@ from sqlalchemy import inspect, text
 
 from api.extensions import db
 from config.db_config import get_mysql_engine
+from utils.database_locks import DatabaseMaintenanceBusy, financial_data_lock
 from utils.file_security import cleanup_all_final_output_directories
 from utils.rbac import role_required
 
@@ -51,43 +52,44 @@ def reset_db():
         inspector = inspect(reset_engine)
         existing_tables = set(inspector.get_table_names())
 
-        with reset_engine.begin() as conn:
-            try:
-                conn.execute(text("SET SESSION innodb_lock_wait_timeout = 30"))
-            except Exception:
-                pass
+        failed_tables = []
 
-            try:
-                conn.execute(text("SET SESSION lock_wait_timeout = 30"))
-            except Exception:
-                pass
-
-            conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
-            try:
-                for table in tables:
-                    if table not in existing_tables:
-                        continue
-
-                    # TRUNCATE is an instant DDL operation (< 0.1s even for 2.7M+ rows)
-                    try:
-                        conn.execute(text(f"TRUNCATE TABLE `{table}`"))
-                    except Exception as err:
-                        print(f"[RESET_DB] TRUNCATE on `{table}` failed ({err}), falling back to DELETE...")
-                        try:
-                            conn.execute(text(f"DELETE FROM `{table}`"))
-                            conn.execute(text(f"ALTER TABLE `{table}` AUTO_INCREMENT = 1"))
-                        except Exception as del_err:
-                            print(f"[RESET_DB] DELETE fallback on `{table}` failed: {del_err}")
-            finally:
+        # Do not reset while a pipeline insert or MultiTax refresh is active.
+        # In particular, never fall back to DELETE: it is slow for million-row
+        # tables and can allow a background job to refill data mid-reset.
+        with financial_data_lock(reset_engine, timeout_seconds=0):
+            # Connect using AUTOCOMMIT because TRUNCATE is DDL in MySQL.
+            with reset_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text("SET SESSION lock_wait_timeout = 10"))
+                conn.execute(text("SET SESSION innodb_lock_wait_timeout = 10"))
+                conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
                 try:
+                    for table in tables:
+                        if table not in existing_tables:
+                            continue
+                        try:
+                            conn.execute(text(f"TRUNCATE TABLE `{table}`"))
+                            print(f"[RESET_DB] TRUNCATE on `{table}` completed successfully.")
+                        except Exception as err:
+                            print(f"[RESET_DB ERROR] TRUNCATE on `{table}` failed: {err}")
+                            failed_tables.append((table, str(err)))
+                finally:
                     conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
-                except Exception:
-                    pass
+
+        if failed_tables:
+            failed_names = ", ".join([f"`{t}`" for t, _ in failed_tables])
+            return jsonify({
+                "status": "error",
+                "message": f"TRUNCATE failed for table(s): {failed_names}",
+                "details": [f"{t}: {err}" for t, err in failed_tables]
+            }), 500
 
         return jsonify({
             "status": "success",
             "message": "Database reset completed successfully",
         }), 200
+    except DatabaseMaintenanceBusy as e:
+        return jsonify({"status": "busy", "message": str(e)}), 409
     except Exception as e:
         import traceback
         print(f"[RESET_DB ERROR]\n{traceback.format_exc()}")

@@ -210,7 +210,7 @@ def get_role_permissions(role_id):
     rows = db.session.execute(
         text(
             """
-            SELECT DISTINCT p.id, p.code
+            SELECT DISTINCT p.id, p.code, p.sort_order
             FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             WHERE rp.role_id = :role_id

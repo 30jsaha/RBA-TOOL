@@ -12,6 +12,7 @@ import {
   InputLabel,
   MenuItem,
   Select,
+  TextField,
   Paper,
   Button,
   Tooltip,
@@ -24,8 +25,10 @@ import {
 import dayjs from "dayjs";
 import API from "../api/api";
 import tableCustomStyles from "../components/common/tableStyles";
+import EmptyState from "../components/common/EmptyState";
+import TableSkeleton from "../components/common/TableSkeleton";
+import ChartDataCard from "../components/common/ChartDataCard";
 import "./css/Dashboard.css";
-import DescriptionIcon from "@mui/icons-material/Description";  // Excel icon
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -40,21 +43,8 @@ const inflightDashboardRequests = new Map();
 const PNGMapCIT = lazy(() => import("../components/maps/PNGMapCIT"));
 const CHART_TOOLBAR = {
   show: false,
-  tools: {
-    download: true,
-    selection: false,
-    zoom: false,
-    zoomin: false,
-    zoomout: false,
-    pan: false,
-    reset: false,
-  },
-  export: {
-    csv: { filename: "cit-chart-data" },
-    svg: { filename: "cit-chart" },
-    png: { filename: "cit-chart" },
-  },
 };
+const VIEW_KEYS = { segmentation: "segmentation", risk: "risk" };
 
 export default function CitDashboard() {
   const [collapsed, setCollapsed] = useState(false);
@@ -63,6 +53,10 @@ export default function CitDashboard() {
   const [tenure, setTenure] = useState("1y");
   const [startDate, setStartDate] = useState(dayjs().startOf("year"));
   const [endDate, setEndDate] = useState(dayjs().endOf("year"));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({
+    tenure: "1y", startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), topCount: 10,
+  }));
+  const [chartView, setChartView] = useState({ [VIEW_KEYS.segmentation]: false, [VIEW_KEYS.risk]: false });
 
   /* ================= DATA STATE ================= */
   const [topProfit, setTopProfit] = useState([]);
@@ -80,6 +74,7 @@ export default function CitDashboard() {
   const [salesDetailsError, setSalesDetailsError] = useState("");
   const [selectedSalesYear, setSelectedSalesYear] = useState(null);
   const [latestRecords, setLatestRecords] = useState([]);
+  const [searchText, setSearchText] = useState("");
 
   const [mapStaticData, setMapStaticData] = useState([]);
   const [selectedProvinceData, setSelectedProvinceData] = useState(null);
@@ -163,14 +158,14 @@ export default function CitDashboard() {
 
   /* ================= HELPERS ================= */
   const getParams = useCallback(() => {
-    const params = { range_type: tenure };
-    if (tenure === "custom") {
-      params.start_date = startDate.format("YYYY-MM-DD");
-      params.end_date = endDate.format("YYYY-MM-DD");
+    const params = { range_type: appliedFilters.tenure };
+    if (appliedFilters.tenure === "custom") {
+      params.start_date = appliedFilters.startDate.format("YYYY-MM-DD");
+      params.end_date = appliedFilters.endDate.format("YYYY-MM-DD");
     }
-    params.top_n = topCount;
+    params.top_n = appliedFilters.topCount;
     return params;
-  }, [tenure, startDate, endDate, topCount]);
+  }, [appliedFilters]);
 
   const downloadCitCsv = async (endpoint, filename, columns, extraParams = {}) => {
     try {
@@ -698,16 +693,28 @@ export default function CitDashboard() {
 
   const displayTopProfit = useMemo(() => topProfit.slice(0, topCount), [topProfit, topCount]);
   const displayTopLoss = useMemo(() => topLoss.slice(0, topCount), [topLoss, topCount]);
-  const hasSegmentationData = useMemo(() => (
-    Array.isArray(segmentation.series) &&
-    segmentation.series.some((v) => Number(v) > 0)
-  ), [segmentation.series]);
-  const hasRiskData = useMemo(() => (
-    Array.isArray(risk.series) &&
-    risk.series.some((v) => Number(v) > 0)
-  ), [risk.series]);
+  const hasSegmentationData = useMemo(() => segmentation.labels.length > 0 && segmentation.series.length > 0, [segmentation]);
+  const hasRiskData = useMemo(() => risk.labels.length > 0 && risk.series.length > 0, [risk]);
+  const toggleChartView = (key) => setChartView((current) => ({ ...current, [key]: !current[key] }));
+  const segmentationTableData = useMemo(() => segmentation.labels.map((label, index) => ({ id: `${label}-${index}`, segment: str(label), count: num(segmentation.series[index]) })), [segmentation]);
+  const riskTableData = useMemo(() => risk.labels.map((label, index) => ({ id: `${label}-${index}`, category: str(label), count: num(risk.series[index]) })), [risk]);
+  const segmentationTableColumns = useMemo(() => [
+    { name: "Segment", selector: (row) => row.segment, sortable: true, wrap: true },
+    { name: "Number of taxpayers", selector: (row) => row.count, sortable: true, right: true, format: (row) => row.count.toLocaleString() },
+  ], []);
+  const riskTableColumns = useMemo(() => [
+    { name: "Risk status", selector: (row) => row.category, sortable: true, wrap: true },
+    { name: "Count", selector: (row) => row.count, sortable: true, right: true, format: (row) => row.count.toLocaleString() },
+  ], []);
 
   const segmentationChartOptions = useMemo(() => ({
+    colors: segmentation.labels.map((label) => ({
+      large: "#2563EB",
+      medium: "#14B8A6",
+      small: "#F59E0B",
+      micro: "#8B5CF6",
+      unknown: "#94A3B8",
+    })[String(label ?? "").trim().toLowerCase().replace(/\s+taxpayer$/, "")] ?? "#94A3B8"),
     chart: {
       toolbar: CHART_TOOLBAR,
     },
@@ -844,6 +851,12 @@ export default function CitDashboard() {
     { name: "Fraud Status", selector: (r) => str(r?.predicted_fraud, "Unknown"), sortable: true, wrap: true },
   ]), []);
 
+  const filteredLatestRecords = useMemo(() => asArray(latestRecords).filter((row) =>
+    Object.values(row || {}).some((value) =>
+      (value ?? "").toString().toLowerCase().includes(searchText.toLowerCase())
+    )
+  ), [latestRecords, searchText]);
+
   const modalOffset = collapsed ? 75 : 250;
   const modalMaxWidth = `calc(100vw - ${modalOffset + 48}px)`;
 
@@ -943,6 +956,14 @@ export default function CitDashboard() {
                     <span>{endDate.format("DD-MM-YYYY")}</span>
                   </div>
                 )}
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={sectionLoading.summary || (tenure === appliedFilters.tenure && startDate.valueOf() === appliedFilters.startDate.valueOf() && endDate.valueOf() === appliedFilters.endDate.valueOf() && topCount === appliedFilters.topCount)}
+                  onClick={() => setAppliedFilters({ tenure, startDate, endDate, topCount })}
+                >
+                  Submit
+                </Button>
               </div>
             </div>
 
@@ -1018,57 +1039,31 @@ export default function CitDashboard() {
             {/* ================== SEGMENTATION & RISK ================= */}
             <div className="row mb-4">
               <div className="col-md-6">
-                <div className="card h-100">
-                  <div className="card-header">
-                    <div className="d-flex justify-content-between align-items-center fw-semibold">
-                      <span>Segmentation Distribution</span>
-                      <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadSegmentationCsv}>
-                        CSV
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="card-body">
-                    {sectionLoading.segmentation ? (
-                      chartSkeleton(300)
-                    ) : hasSegmentationData ? (
+                <ChartDataCard title="Segmentation Distribution" isChartView={chartView[VIEW_KEYS.segmentation]} onToggleView={() => toggleChartView(VIEW_KEYS.segmentation)} onDownloadCsv={downloadSegmentationCsv} loading={sectionLoading.segmentation} hasData={hasSegmentationData} chartSkeleton={chartSkeleton(300)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                  chartContent={
                       <Chart
                         type="bar"
                         height={300}
                         series={segmentationBarSeries}
                         options={segmentationChartOptions}
                       />
-                    ) : (
-                      <div className="text-center py-4">There are no records to display</div>
-                    )}
-                  </div>
-                </div>
+                  }
+                  tableContent={<DataTable columns={segmentationTableColumns} data={segmentationTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
+                />
               </div>
 
               <div className="col-md-6">
-                <div className="card h-100">
-                  <div className="card-header">
-                    <div className="d-flex justify-content-between align-items-center fw-semibold">
-                      <span>Risk Flagged vs Non-Risk</span>
-                      <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadRiskCsv}>
-                        CSV
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="card-body">
-                    {sectionLoading.risk ? (
-                      chartSkeleton(300)
-                    ) : hasRiskData ? (
+                <ChartDataCard title="Risk Flagged vs Non-Risk" isChartView={chartView[VIEW_KEYS.risk]} onToggleView={() => toggleChartView(VIEW_KEYS.risk)} onDownloadCsv={downloadRiskCsv} loading={sectionLoading.risk} hasData={hasRiskData} chartSkeleton={chartSkeleton(300)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                  chartContent={
                       <Chart
                         type="pie"
                         height={300}
                         series={risk.series}
                         options={riskChartOptions}
                       />
-                    ) : (
-                      <div className="text-center py-4">There are no records to display</div>
-                    )}
-                  </div>
-                </div>
+                  }
+                  tableContent={<DataTable columns={riskTableColumns} data={riskTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
+                />
               </div>
 
               <div className="col-md-6">
@@ -1191,21 +1186,28 @@ export default function CitDashboard() {
               </div>
               <div className="col-12 mt-3">
                 <Paper className="p-3">
-                  <div className="d-flex justify-content-between mb-2 align-items-center">
+                  <div className="d-flex justify-content-between mb-3 align-items-center">
                     <h6 className="fw-bold mb-0">Latest CIT Records</h6>
+                    <TextField
+                      size="small"
+                      placeholder="Search..."
+                      value={searchText}
+                      onChange={(e) => setSearchText(e.target.value)}
+                    />
                     <Button
                       size="small"
                       variant="outlined"
                       color="primary"
-                      startIcon={<DescriptionIcon />}
+                      startIcon={<TableChartIcon />}
                       onClick={downloadLatestRecordsCsv}
+                      className="hideme"
                     >
-                      Download Latest Records
+                      CSV
                     </Button>
                   </div>
                   <DataTable
                     columns={latestRecordsCols}
-                    data={latestRecords}
+                    data={filteredLatestRecords}
                     pagination
                     dense
                     striped

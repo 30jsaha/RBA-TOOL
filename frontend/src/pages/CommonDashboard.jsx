@@ -1,6 +1,7 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import Swal from "sweetalert2";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -28,6 +29,9 @@ import {
 import dayjs from "dayjs";
 import API from "../api/api";
 import tableCustomStyles from "../components/common/tableStyles";
+import EmptyState from "../components/common/EmptyState";
+import TableSkeleton from "../components/common/TableSkeleton";
+import ChartDataCard from "../components/common/ChartDataCard";
 import "./css/Dashboard.css";
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 
@@ -61,12 +65,17 @@ export default function CommonDashboard() {
   const [collapsed, setCollapsed] = useState(false);
   const [openMenu, setOpenMenu] = useState(null);
 
+  const ALL_TIN_OPTION = useMemo(() => ({ tin: "ALL", name: "All Taxpayers", label: "ALL - All Taxpayers" }), []);
+
   /* FILTERS */
   const [startDate, setStartDate] = useState(dayjs().startOf("year"));
   const [endDate, setEndDate] = useState(dayjs().endOf("year"));
 
-  const [tinList, setTinList] = useState([]);
-  const [selectedTin, setSelectedTin] = useState(null);
+  const [tinList, setTinList] = useState([ALL_TIN_OPTION]);
+  const [selectedTin, setSelectedTin] = useState(ALL_TIN_OPTION);
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ startDate: dayjs().startOf("year"), endDate: dayjs().endOf("year"), selectedTin: ALL_TIN_OPTION }));
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [chartView, setChartView] = useState({ taxFlow: false, sector: false, fraudTrend: false, fraudDistribution: false });
   const [tinInputValue, setTinInputValue] = useState("");
   const [tinLoading, setTinLoading] = useState(false);
 
@@ -77,14 +86,21 @@ export default function CommonDashboard() {
   const [sectorData, setSectorData] = useState([]);
   const [topTins, setTopTins] = useState([]);
   const [records, setRecords] = useState([]);
+  const [recordsTotal, setRecordsTotal] = useState(0);
+  const [recordsQuery, setRecordsQuery] = useState({ filters: { range_type: "all" }, page: 1, pageSize: 50 });
+  const [recordsReload, setRecordsReload] = useState(0);
+  const [rebuildStarting, setRebuildStarting] = useState(false);
+  const rebuildStartingRef = useRef(false);
+  const statusRequestRef = useRef(false);
+  const [statusPollError, setStatusPollError] = useState("");
   const [fraudTrend, setFraudTrend] = useState([]);
-  const [overviewLoading, setOverviewLoading] = useState(true);
-  const [taxFlowLoading, setTaxFlowLoading] = useState(true);
-  const [riskExposureLoading, setRiskExposureLoading] = useState(true);
-  const [sectorLoading, setSectorLoading] = useState(true);
-  const [topTinsLoading, setTopTinsLoading] = useState(true);
-  const [recordsLoading, setRecordsLoading] = useState(true);
-  const [fraudTrendLoading, setFraudTrendLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [taxFlowLoading, setTaxFlowLoading] = useState(false);
+  const [riskExposureLoading, setRiskExposureLoading] = useState(false);
+  const [sectorLoading, setSectorLoading] = useState(false);
+  const [topTinsLoading, setTopTinsLoading] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [fraudTrendLoading, setFraudTrendLoading] = useState(false);
   const [overviewError, setOverviewError] = useState("");
   const [taxFlowError, setTaxFlowError] = useState("");
   const [riskExposureError, setRiskExposureError] = useState("");
@@ -105,12 +121,14 @@ export default function CommonDashboard() {
   });
   const [summaryDialogOpen, setSummaryDialogOpen] = useState(false);
 
-  const params = useMemo(() => ({
+  const buildParams = (filters) => ({
     range_type: "custom",
-    start_date: startDate.format("YYYY-MM-DD"),
-    end_date: endDate.format("YYYY-MM-DD"),
-    ...(selectedTin?.tin && { tin: selectedTin.tin }),
-  }), [endDate, selectedTin, startDate]);
+    start_date: filters.startDate.format("YYYY-MM-DD"),
+    end_date: filters.endDate.format("YYYY-MM-DD"),
+    ...(filters.selectedTin?.tin && filters.selectedTin.tin !== "ALL" && { tin: filters.selectedTin.tin }),
+  });
+
+  const params = useMemo(() => buildParams(appliedFilters), [appliedFilters]);
 
   const getErrorMessage = useCallback(
     (err) =>
@@ -200,19 +218,24 @@ export default function CommonDashboard() {
       "tax",
       "profit",
     ]), [downloadCommonCsv]);
-  const downloadConsolidatedCsv = useCallback(() =>
-    downloadCommonCsv("/common/download-csv/consolidated", "consolidated.csv", [
-      "tin",
-      "taxpayer_name",
-      "tax_period_year",
-      "total_income",
-      "profit",
-      "cit_tax",
-      "gst_diff",
-      "swt_diff",
-      "predicted_fraud",
-      "sector_activity",
-    ]), [downloadCommonCsv]);
+  const downloadConsolidatedCsv = useCallback(async () => {
+    try {
+      const response = await API.get("/common-dashboard/multitax-records", {
+        params: { ...recordsQuery.filters, page: recordsQuery.page, page_size: recordsQuery.pageSize, format: "csv" },
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `multitax-records-page-${recordsQuery.page}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      Swal.fire({ icon: "error", text: getErrorMessage(err) });
+    }
+  }, [getErrorMessage, recordsQuery]);
 
   const chartSkeleton = (height = 350) => (
     <Box>
@@ -237,11 +260,11 @@ export default function CommonDashboard() {
   );
 
   /* ================= API CALL ================= */
-  const loadOverview = useCallback(async (fetchId) => {
+  const loadOverview = useCallback(async (fetchId, requestParams) => {
     setOverviewLoading(true);
     setOverviewError("");
     try {
-      const overviewRes = await API.get("/common-dashboard/financial-overview", { params });
+      const overviewRes = await API.get("/common-dashboard/financial-overview", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setOverview(overviewRes.data || {});
       });
@@ -255,13 +278,13 @@ export default function CommonDashboard() {
         setOverviewLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadTaxFlow = useCallback(async (fetchId) => {
+  const loadTaxFlow = useCallback(async (fetchId, requestParams) => {
     setTaxFlowLoading(true);
     setTaxFlowError("");
     try {
-      const flowRes = await API.get("/common-dashboard/tax-flow", { params });
+      const flowRes = await API.get("/common-dashboard/tax-flow", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setTaxFlow({
           categories: flowRes.data?.categories ?? [],
@@ -278,13 +301,13 @@ export default function CommonDashboard() {
         setTaxFlowLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadRiskExposure = useCallback(async (fetchId) => {
+  const loadRiskExposure = useCallback(async (fetchId, requestParams) => {
     setRiskExposureLoading(true);
     setRiskExposureError("");
     try {
-      const riskRes = await API.get("/common-dashboard/risk-exposure", { params });
+      const riskRes = await API.get("/common-dashboard/risk-exposure", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setRiskExposure(asArray(riskRes.data));
       });
@@ -298,13 +321,13 @@ export default function CommonDashboard() {
         setRiskExposureLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadSectorAnalysis = useCallback(async (fetchId) => {
+  const loadSectorAnalysis = useCallback(async (fetchId, requestParams) => {
     setSectorLoading(true);
     setSectorError("");
     try {
-      const sectorRes = await API.get("/common-dashboard/sector-analysis", { params });
+      const sectorRes = await API.get("/common-dashboard/sector-analysis", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setSectorData(asArray(sectorRes.data));
       });
@@ -318,13 +341,13 @@ export default function CommonDashboard() {
         setSectorLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadTopFinancialTins = useCallback(async (fetchId) => {
+  const loadTopFinancialTins = useCallback(async (fetchId, requestParams) => {
     setTopTinsLoading(true);
     setTopTinsError("");
     try {
-      const topRes = await API.get("/common-dashboard/top-financial-tins", { params });
+      const topRes = await API.get("/common-dashboard/top-financial-tins", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setTopTins(asArray(topRes.data));
       });
@@ -338,33 +361,36 @@ export default function CommonDashboard() {
         setTopTinsLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
-  const loadConsolidated = useCallback(async (fetchId) => {
+  useEffect(() => {
+    const controller = new AbortController();
     setRecordsLoading(true);
     setRecordsError("");
-    try {
-      const recordsRes = await API.get("/common-dashboard/consolidated-records", { params });
-      applyIfCurrent(fetchId, () => {
-        setRecords(asArray(recordsRes.data));
-      });
-    } catch (err) {
-      console.error("Error fetching records:", err);
-      applyIfCurrent(fetchId, () => {
-        setRecordsError(getErrorMessage(err));
-      });
-    } finally {
-      applyIfCurrent(fetchId, () => {
-        setRecordsLoading(false);
-      });
-    }
-  }, [applyIfCurrent, getErrorMessage, params]);
+    API.get("/common-dashboard/multitax-records", {
+      params: { ...recordsQuery.filters, page: recordsQuery.page, page_size: recordsQuery.pageSize },
+      signal: controller.signal,
+    }).then(({ data }) => {
+      if (controller.signal.aborted) return;
+      if (data.page !== recordsQuery.page) {
+        setRecordsQuery((previous) => ({ ...previous, page: data.page }));
+        return;
+      }
+      setRecords(asArray(data.records));
+      setRecordsTotal(Number(data.total) || 0);
+    }).catch((err) => {
+      if (!controller.signal.aborted) setRecordsError(getErrorMessage(err));
+    }).finally(() => {
+      if (!controller.signal.aborted) setRecordsLoading(false);
+    });
+    return () => controller.abort();
+  }, [getErrorMessage, recordsQuery, recordsReload]);
 
-  const loadFraudTrend = useCallback(async (fetchId) => {
+  const loadFraudTrend = useCallback(async (fetchId, requestParams) => {
     setFraudTrendLoading(true);
     setFraudTrendError("");
     try {
-      const fraudRes = await API.get("/common-dashboard/fraud-trend", { params });
+      const fraudRes = await API.get("/common-dashboard/fraud-trend", { params: requestParams });
       applyIfCurrent(fetchId, () => {
         setFraudTrend(asArray(fraudRes.data));
       });
@@ -378,7 +404,7 @@ export default function CommonDashboard() {
         setFraudTrendLoading(false);
       });
     }
-  }, [applyIfCurrent, getErrorMessage, params]);
+  }, [applyIfCurrent, getErrorMessage]);
 
   const loadTinOptions = useCallback(async (query = "") => {
     setTinLoading(true);
@@ -389,12 +415,14 @@ export default function CommonDashboard() {
       if (!isMountedRef.current) {
         return;
       }
-      setTinList(
-        (res.data || []).map((row) => ({
-          label: `${row.tin} - ${row.name}`,
+      setTinList([
+        ALL_TIN_OPTION,
+        ...(res.data || []).map((row) => ({
+          label: row.label || `${row.tin} - ${row.name || row.taxpayer_name}`,
           tin: row.tin,
-        }))
-      );
+          name: row.name || row.taxpayer_name,
+        })),
+      ]);
     } catch (err) {
       console.error("Error fetching dropdown:", err);
     } finally {
@@ -402,42 +430,38 @@ export default function CommonDashboard() {
         setTinLoading(false);
       }
     }
-  }, []);
+  }, [ALL_TIN_OPTION]);
 
-  useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      loadTinOptions(tinInputValue.trim());
-    }, 300);
-
-    return () => window.clearTimeout(timerId);
-  }, [loadTinOptions, tinInputValue]);
-
-  const reloadDashboard = useCallback(() => {
+  const reloadDashboard = useCallback((requestParams = params) => {
     const fetchId = fetchSequenceRef.current + 1;
     fetchSequenceRef.current = fetchId;
 
-    loadOverview(fetchId);
-    loadTaxFlow(fetchId);
-    loadRiskExposure(fetchId);
-    loadSectorAnalysis(fetchId);
-    loadTopFinancialTins(fetchId);
-    loadConsolidated(fetchId);
-    loadFraudTrend(fetchId);
+    return Promise.all([
+      loadOverview(fetchId, requestParams),
+      loadTaxFlow(fetchId, requestParams),
+      loadRiskExposure(fetchId, requestParams),
+      loadSectorAnalysis(fetchId, requestParams),
+      loadTopFinancialTins(fetchId, requestParams),
+      loadFraudTrend(fetchId, requestParams),
+    ]);
   }, [
-    loadConsolidated,
     loadFraudTrend,
     loadOverview,
     loadRiskExposure,
     loadSectorAnalysis,
     loadTaxFlow,
     loadTopFinancialTins,
+    params,
   ]);
 
   const loadSummaryStatus = useCallback(async ({ silent = false } = {}) => {
+    if (statusRequestRef.current) return;
+    statusRequestRef.current = true;
     try {
       const res = await API.get("/common-dashboard/rebuild-status");
       if (!isMountedRef.current) return;
       const data = res.data || {};
+      setStatusPollError("");
       const rawStatus = String(data.status || "idle").toLowerCase();
       setSummaryStatus({
         status: rawStatus === "queued" ? "running" : rawStatus,
@@ -448,40 +472,52 @@ export default function CommonDashboard() {
       });
     } catch (err) {
       if (!silent) console.error("Error fetching summary status:", err);
+      if (isMountedRef.current) setStatusPollError("Unable to read refresh status. The job may still be running.");
+    } finally {
+      statusRequestRef.current = false;
     }
   }, []);
 
   const startSummaryRebuild = useCallback(async () => {
+    if (rebuildStartingRef.current) return;
+    rebuildStartingRef.current = true;
+    setRebuildStarting(true);
     try {
       await API.post("/common-dashboard/rebuild-summary");
+      summaryStatusTransitionRef.current = "running";
+      setSummaryStatus((previous) => ({ ...previous, status: "running", progress: 0, currentStep: "Preparing Multi-Tax Integration", error: "" }));
       setSummaryDialogOpen(true);
       await loadSummaryStatus();
     } catch (err) {
       if (err?.response?.status === 409) {
+        summaryStatusTransitionRef.current = "running";
+        setSummaryStatus((previous) => ({ ...previous, status: "running", error: "" }));
         setSummaryDialogOpen(true);
         await loadSummaryStatus();
         return;
       }
       console.error("Error starting summary rebuild:", err);
       if (isMountedRef.current) {
-        setSummaryStatus((prev) => ({ ...prev, status: "failed", error: getErrorMessage(err) }));
+        if (!err?.response || err.response.status === 503) {
+          setSummaryStatus((prev) => ({ ...prev, status: "running", currentStep: "Checking refresh status", error: "" }));
+          setStatusPollError("Refresh startup was not confirmed. Checking the server before retrying.");
+        } else {
+          setSummaryStatus((prev) => ({ ...prev, status: "failed", error: getErrorMessage(err) }));
+        }
         setSummaryDialogOpen(true);
       }
+    } finally {
+      rebuildStartingRef.current = false;
+      if (isMountedRef.current) setRebuildStarting(false);
     }
   }, [getErrorMessage, loadSummaryStatus]);
-
-  useEffect(() => {
-    reloadDashboard();
-  }, [reloadDashboard]);
-
-  useEffect(() => {
-    loadSummaryStatus({ silent: true });
-  }, [loadSummaryStatus]);
 
   useEffect(() => {
     const isRunning = summaryStatus.status === "running";
     if (isRunning) {
       setSummaryDialogOpen(true);
+    }
+    if (isRunning || statusPollError) {
       if (!rebuildPollIntervalRef.current) {
         rebuildPollIntervalRef.current = window.setInterval(() => loadSummaryStatus({ silent: true }), 2000);
       }
@@ -492,13 +528,15 @@ export default function CommonDashboard() {
     if (summaryStatusTransitionRef.current === "running" && summaryStatus.status === "completed") {
       setSummaryDialogOpen(false);
       reloadDashboard();
+      setRecordsReload((value) => value + 1);
       loadTinOptions(tinInputValue.trim());
     }
     summaryStatusTransitionRef.current = summaryStatus.status;
-  }, [loadSummaryStatus, loadTinOptions, reloadDashboard, summaryStatus.status, tinInputValue]);
+  }, [loadSummaryStatus, loadTinOptions, reloadDashboard, summaryStatus.status, statusPollError, tinInputValue]);
 
   useEffect(() => {
     isMountedRef.current = true;
+    loadSummaryStatus();
     return () => {
       if (rebuildPollIntervalRef.current) {
         window.clearInterval(rebuildPollIntervalRef.current);
@@ -506,7 +544,41 @@ export default function CommonDashboard() {
       }
       isMountedRef.current = false;
     };
-  }, []);
+  }, [loadSummaryStatus]);
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      loadTinOptions(tinInputValue.trim());
+    }, 300);
+
+    return () => window.clearTimeout(timerId);
+  }, [loadTinOptions, tinInputValue]);
+
+  const hasValidDateRange = Boolean(
+    startDate?.isValid?.() &&
+      endDate?.isValid?.() &&
+      !startDate.isAfter(endDate, "day")
+  );
+
+  const handleSubmit = () => {
+    if (isSubmitting || !hasValidDateRange) {
+      return;
+    }
+
+    if (!selectedTin?.tin) {
+      Swal.fire({ icon: "warning", text: "Please select TIN" });
+      return;
+    }
+
+    const nextFilters = { startDate, endDate, selectedTin };
+    setIsSubmitting(true);
+    setAppliedFilters(nextFilters);
+    setRecordsQuery((previous) => ({ ...previous, filters: buildParams(nextFilters), page: 1 }));
+    Promise.all([
+      reloadDashboard(buildParams(nextFilters)),
+      loadTinOptions(tinInputValue.trim()),
+    ]).finally(() => setIsSubmitting(false));
+  };
 
   //SSO TOKEN HANDLING
   // useEffect(() => {
@@ -542,9 +614,14 @@ export default function CommonDashboard() {
   const hasRecordsData = useMemo(() => asArray(records).length > 0, [records]);
   const hasFraudTrendData = useMemo(() => asArray(fraudTrend).length > 0, [fraudTrend]);
   const hasRiskExposureData = useMemo(() => asArray(riskExposure).length > 0, [riskExposure]);
+  const toggleChartView = (key) => setChartView((current) => ({ ...current, [key]: !current[key] }));
+  const taxFlowTableData = useMemo(() => asArray(taxFlow.categories).map((category, index) => ({ id: `${category}-${index}`, period: category, ...Object.fromEntries(asArray(taxFlow.series).map((series, seriesIndex) => [`series_${seriesIndex}`, num(series?.data?.[index])])) })), [taxFlow]);
+  const taxFlowTableColumns = useMemo(() => [{ name: "Period", selector: (row) => row.period, sortable: true }, ...asArray(taxFlow.series).map((series, index) => ({ name: series?.name || `Series ${index + 1}`, selector: (row) => row[`series_${index}`], sortable: true, right: true, format: (row) => row[`series_${index}`].toLocaleString() }))], [taxFlow]);
+  const fraudTrendColumns = useMemo(() => [{ name: "Year", selector: (row) => row.year, sortable: true }, { name: "Fraud Cases", selector: (row) => num(row?.fraud_cases ?? row?.fraudCases ?? row?.count), sortable: true, right: true }], []);
+  const riskExposureColumns = useMemo(() => [{ name: "Risk Status", selector: (row) => row?.predicted_fraud ?? "Unknown", sortable: true }, { name: "Taxpayers", selector: (row) => num(row?.taxpayers), sortable: true, right: true }], []);
   const hasOverviewData = useMemo(
-    () => [turnover, profit, tax, etr].some((value) => value !== 0),
-    [etr, profit, tax, turnover]
+    () => Object.keys(overview).length > 0,
+    [overview]
   );
 
   /* ================= CHART OPTIONS ================= */
@@ -624,14 +701,17 @@ export default function CommonDashboard() {
 
   /* ================= TABLE ================= */
   const recordColumns = useMemo(() => [
-    { name: "TIN", selector: (r) => str(r?.tin ?? r?.tin_number ?? r?.tinNumber, ""), sortable: true },
-    { name: "Taxpayer", selector: (r) => str(r?.taxpayer ?? r?.taxpayer_name ?? r?.taxpayerName) },
-    { name: "Year", selector: (r) => str(r?.tax_period_year ?? r?.year ?? r?.taxPeriodYear, "") },
-    { name: "Income", selector: (r) => num(r?.total_income ?? r?.income) },
-    { name: "Profit", selector: (r) => num(r?.profit) },
-    { name: "Tax", selector: (r) => num(r?.cit_tax ?? r?.tax) },
-    { name: "Sector", selector: (r) => str(r?.sector_activity ?? r?.sector ?? r?.sectorActivity) },
-    { name: "Risk", selector: (r) => str(r?.predicted_fraud ?? r?.risk_category ?? r?.riskCategory) },
+    { name: "TIN", selector: (r) => str(r.tin, "") },
+    { name: "Taxpayer", selector: (r) => str(r.taxpayer_name) },
+    { name: "Year", selector: (r) => str(r.tax_period_year, "") },
+    { name: "Account", selector: (r) => str(r.tax_account_number, "") },
+    { name: "Assessment", selector: (r) => str(r.assessment_number, "") },
+    { name: "CIT Gross Income", selector: (r) => num(r.cit_total_gross_income) },
+    { name: "CIT Tax Payable", selector: (r) => num(r.cit_total_tax_payable) },
+    { name: "GST Sales Difference", selector: (r) => num(r.gst_vs_cit_sales_diff_abs) },
+    { name: "SWT Salary Difference", selector: (r) => num(r.swt_vs_cit_salary_diff_abs) },
+    { name: "Sector", selector: (r) => str(r.sector_activity) },
+    { name: "Multi-Tax Issue", selector: (r) => str(r.multi_tax_issue) },
   ], []);
 
   const fraudBarOptions = useMemo(() => ({
@@ -813,8 +893,8 @@ export default function CommonDashboard() {
                         </div>
 
                         <div className="d-flex align-items-center gap-2 hideme">
-                          <Button variant="outlined" color="primary" size="small" disabled={summaryStatus.status === "running"} onClick={startSummaryRebuild}>
-                            Refresh Dashboard Data
+                          <Button variant="outlined" color="primary" size="small" disabled={rebuildStarting || summaryStatus.status === "running"} onClick={startSummaryRebuild}>
+                            Run Multi-Tax Integration
                           </Button>
                           <Button variant="contained" color="primary" size="small" onClick={downloadDashboardPDF}>
                             Download PDF
@@ -832,7 +912,12 @@ export default function CommonDashboard() {
                             format="DD/MM/YYYY"
                             value={startDate}
                             onChange={(newValue) => {
-                              if (!newValue || !newValue.isValid()) return;
+                              if (newValue && !newValue.isValid()) return;
+
+                              if (!newValue) {
+                                setStartDate(null);
+                                return;
+                              }
 
                               const year = newValue.year();
                               if (year < 1900 || year > 2100) return;
@@ -857,7 +942,12 @@ export default function CommonDashboard() {
                             format="DD/MM/YYYY"
                             value={endDate}
                             onChange={(newValue) => {
-                              if (!newValue || !newValue.isValid()) return;
+                              if (newValue && !newValue.isValid()) return;
+
+                              if (!newValue) {
+                                setEndDate(null);
+                                return;
+                              }
 
                               const year = newValue.year();
                               if (year < 1900 || year > 2100) return;
@@ -886,12 +976,23 @@ export default function CommonDashboard() {
                             isOptionEqualToValue={(option, value) =>
                               option?.tin === value?.tin
                             }
-                            onChange={(_, value) => setSelectedTin(value)}
+                            onChange={(_, value) => setSelectedTin(value || ALL_TIN_OPTION)}
                             onInputChange={(_, value) => setTinInputValue(value)}
                             renderInput={(params) => (
                               <TextField {...params} size="small" label="TIN / Taxpayer" />
                             )}
                           />
+                        </div>
+
+                        <div className="col-12 d-flex justify-content-end mt-2">
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disabled={isSubmitting || !hasValidDateRange}
+                            onClick={handleSubmit}
+                          >
+                            Submit
+                          </Button>
                         </div>
 
                       </div>
@@ -977,27 +1078,18 @@ export default function CommonDashboard() {
 
                       <div className="col-md-12 mt-4">
                         {/* TAX FLOW */}
-                        <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Tax Flow (Income vs Profit vs CIT)</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadTaxFlowCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                          {taxFlowLoading ? (
-                            chartSkeleton(350)
-                          ) : taxFlowError ? null : hasTaxFlowData ? (
+                        <ChartDataCard title="Tax Flow (Income vs Profit vs CIT)" isChartView={chartView.taxFlow} onToggleView={() => toggleChartView("taxFlow")} onDownloadCsv={downloadTaxFlowCsv} loading={taxFlowLoading} hasData={hasTaxFlowData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={Math.max(asArray(taxFlow.series).length + 1, 4)} />} emptyMessage="No records available for the selected criteria"
+                          chartContent={
                             <Chart
                               options={taxFlowOptions}
                               series={taxFlowSeries}
                               type="bar"
                               height={350}
                             />
-                          ) : (
-                            renderNoData()
-                          )}
-                          {renderSectionError(taxFlowError)}
-                        </Paper>
+                          }
+                          tableContent={<DataTable columns={taxFlowTableColumns} data={taxFlowTableData} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                        />
+                        {renderSectionError(taxFlowError)}
                       </div>
                     </div>
 
@@ -1005,17 +1097,8 @@ export default function CommonDashboard() {
                     {/* SECTOR + TOP TINS */}
                     <div className="row mb-4">
                       <div className="col-md-12">
-                        <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Top Sectors by Income</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadTopSectorsCsv}>
-                              CSV
-                            </Button>
-                          </div>
-
-                          {sectorLoading ? (
-                            chartSkeleton(350)
-                          ) : sectorError ? null : hasSectorData ? (
+                        <ChartDataCard title="Top Sectors by Income" isChartView={chartView.sector} onToggleView={() => toggleChartView("sector")} onDownloadCsv={downloadTopSectorsCsv} loading={sectorLoading} hasData={hasSectorData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={sectorColumns.length} />} emptyMessage="No records available for the selected criteria"
+                          chartContent={
                             <div style={{ overflowX: "auto" }}>
                               <div style={{ minWidth: `${sectorData.length * 120}px` }}>
                                 <Chart
@@ -1026,11 +1109,10 @@ export default function CommonDashboard() {
                                 />
                               </div>
                             </div>
-                          ) : (
-                            renderNoData()
-                          )}
-                          {renderSectionError(sectorError)}
-                        </Paper>
+                          }
+                          tableContent={<DataTable columns={sectorColumns} data={sectorData} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                        />
+                        {renderSectionError(sectorError)}
 
                       </div>
                       <div className="col-md-12">
@@ -1059,52 +1141,34 @@ export default function CommonDashboard() {
 
                         {/* Bar Chart */}
                         <div className="col-md-6">
-                          <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Fraud Cases by Year</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadFraudYearCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                              {fraudTrendLoading ? (
-                                chartSkeleton(320)
-                              ) : fraudTrendError ? null : hasFraudTrendData ? (
+                          <ChartDataCard title="Fraud Cases by Year" isChartView={chartView.fraudTrend} onToggleView={() => toggleChartView("fraudTrend")} onDownloadCsv={downloadFraudYearCsv} loading={fraudTrendLoading} hasData={hasFraudTrendData} chartSkeleton={chartSkeleton(320)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                            chartContent={
                                 <Chart
                                   options={fraudBarOptions}
                                   series={fraudBarSeries}
                                   type="bar"
                                   height={320}
                                 />
-                              ) : (
-                                renderNoData()
-                              )}
-                              {renderSectionError(fraudTrendError)}
-                          </Paper>
+                            }
+                            tableContent={<DataTable columns={fraudTrendColumns} data={fraudTrend} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                          />
+                          {renderSectionError(fraudTrendError)}
                         </div>
 
                         {/* Pie Chart */}
                         <div className="col-md-6">
-                          <Paper className="p-3 mb-4">
-                          <div className="d-flex justify-content-between align-items-center">
-                            <h6>Fraud Distribution</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadFraudDistributionCsv}>
-                              CSV
-                            </Button>
-                          </div>
-                              {riskExposureLoading ? (
-                                chartSkeleton(320)
-                              ) : riskExposureError ? null : hasRiskExposureData ? (
+                          <ChartDataCard title="Fraud Distribution" isChartView={chartView.fraudDistribution} onToggleView={() => toggleChartView("fraudDistribution")} onDownloadCsv={downloadFraudDistributionCsv} loading={riskExposureLoading} hasData={hasRiskExposureData} chartSkeleton={chartSkeleton(320)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
+                            chartContent={
                                 <Chart
                                   options={fraudPieOptions}
                                   series={fraudPieSeries}
                                   type="pie"
                                   height={320}
                                 />
-                              ) : (
-                                renderNoData()
-                              )}
-                              {renderSectionError(riskExposureError)}
-                          </Paper>
+                            }
+                            tableContent={<DataTable columns={riskExposureColumns} data={riskExposure} dense pagination paginationPerPage={10} customStyles={tableCustomStyles} />}
+                          />
+                          {renderSectionError(riskExposureError)}
                         </div>
 
                       <div className="col-md-12">
@@ -1135,23 +1199,32 @@ export default function CommonDashboard() {
                         {/* MAIN TABLE */}
                         <Paper className="p-3 mb-4 table-responsive">
                           <div className="d-flex justify-content-between align-items-center">
-                            <h6>Consolidated Records</h6>
-                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadConsolidatedCsv}>
-                              CSV
+                            <h6>Multi-Tax Records ({recordsTotal.toLocaleString()})</h6>
+                            <Button size="small" onClick={() => setRecordsQuery((previous) => ({ ...previous, filters: { range_type: "all" }, page: 1 }))}>Show all records</Button>
+                            <Button size="small" variant="outlined" color="primary" startIcon={<TableChartIcon />} onClick={downloadConsolidatedCsv} disabled={recordsLoading || !!recordsError || !hasRecordsData}>
+                              CSV (current page)
                             </Button>
                           </div>
-                          {recordsLoading ? (
-                            <Skeleton variant="rectangular" height={320} sx={{ borderRadius: 2 }} />
-                          ) : recordsError ? null : hasRecordsData ? (
-                            <DataTable
-                              columns={recordColumns}
-                              data={records}
-                              pagination
-                              customStyles={tableCustomStyles}
-                            />
-                          ) : (
-                            renderNoData()
-                          )}
+                          <p className="text-muted small">
+                            {recordsQuery.filters.range_type === "all" ? "All taxpayers and all periods." : "Showing the submitted TIN and period filters."}
+                          </p>
+                          <DataTable
+                            key={`${recordsQuery.page}-${recordsQuery.pageSize}`}
+                            columns={recordColumns}
+                            data={recordsError ? [] : records}
+                            progressPending={recordsLoading}
+                            progressComponent={<Skeleton variant="rectangular" height={320} width="100%" />}
+                            noDataComponent={recordsError ? "Records could not be loaded." : "No Multi-Tax records found."}
+                            pagination
+                            paginationServer
+                            paginationTotalRows={recordsTotal}
+                            paginationPerPage={recordsQuery.pageSize}
+                            paginationDefaultPage={recordsQuery.page}
+                            paginationRowsPerPageOptions={[25, 50, 100, 200]}
+                            onChangePage={(page) => setRecordsQuery((previous) => ({ ...previous, page }))}
+                            onChangeRowsPerPage={(pageSize) => setRecordsQuery((previous) => ({ ...previous, pageSize, page: 1 }))}
+                            customStyles={tableCustomStyles}
+                          />
                           {renderSectionError(recordsError)}
                         </Paper>
                       </div>
@@ -1169,8 +1242,9 @@ export default function CommonDashboard() {
             fullWidth
             maxWidth="xs"
           >
-            <DialogTitle>Refreshing Dashboard Data</DialogTitle>
+            <DialogTitle>Run Multi-Tax Integration</DialogTitle>
             <DialogContent>
+              {statusPollError && <Alert severity="warning">{statusPollError}</Alert>}
               <Typography variant="body2" sx={{ mb: 1 }}>
                 {summaryStatus.currentStep || "Refreshing dashboard summary"}
               </Typography>

@@ -84,11 +84,20 @@ export default function UploadHistory() {
       sortable: true,
       width: "120px",
     },
-    { name: "File Name", selector: (row) => row.file_name, grow: 2 },
-    { name: "Tax Parameter", selector: (row) => row.tax_parameter },
-    { name: "Uploaded By", selector: (row) => row.uploaded_by },
-    { name: "Role", selector: (row) => row.role },
-    
+    { name: "File Name", selector: (row) => row.file_name, grow: 2, sortable: true },
+    { name: "Tax Parameter", selector: (row) => row.tax_parameter, sortable: true },
+    {
+      name: "Row Count",
+      selector: (row) => (row.row_count !== undefined && row.row_count !== null ? row.row_count.toLocaleString() : "-"),
+      sortable: true,
+    },
+    {
+      name: "File Size",
+      selector: (row) => (row.file_size_mb !== undefined && row.file_size_mb !== null ? `${row.file_size_mb} MB` : "-"),
+      sortable: true,
+    },
+    { name: "Uploaded By", selector: (row) => row.uploaded_by, sortable: true },
+    { name: "Role", selector: (row) => row.role, sortable: true },
   ];
 
   return (

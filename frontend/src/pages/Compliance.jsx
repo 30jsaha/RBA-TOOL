@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
@@ -15,11 +15,15 @@ import {
   Card,
   CardContent,
   Typography,
+  Skeleton,
+  Box,
+  Button,
 } from "@mui/material";
 import dayjs from "dayjs";
 import "./css/Dashboard.css";
 import tableCustomStyles from "../components/common/tableStyles";
 import API from "../api/api";
+import EmptyState from "../components/common/EmptyState";
 import { exportToCSV } from "../utils/exportUtils.jsx";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -32,6 +36,9 @@ export default function Compliance() {
   const [tenure, setTenure] = useState("3M");
   const [startDate, setStartDate] = useState(dayjs().subtract(2, "month").startOf("month"));
   const [endDate, setEndDate] = useState(dayjs());
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "3M", startDate: dayjs().subtract(2, "month").startOf("month"), endDate: dayjs() }));
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [chartView, setChartView] = useState({ filing: false, timeliness: false, profitability: false });
   const [searchText, setSearchText] = useState("");
   const [selectedIndustry, setSelectedIndustry] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,15 +65,15 @@ export default function Compliance() {
 
   const BASE_PATH = "/compliance";
 
-  const getParams = () => {
+  const getParams = (filters = appliedFilters) => {
     const params = {
-      taxtype: taxType,
-      range_type: tenure.toUpperCase(),
+      taxtype: filters.taxType,
+      range_type: filters.tenure.toUpperCase(),
     };
 
-    if (tenure === "custom" && startDate && endDate) {
-      params.start_date = startDate.format("YYYY-MM-DD");
-      params.end_date = endDate.format("YYYY-MM-DD");
+    if (filters.tenure === "custom" && filters.startDate && filters.endDate) {
+      params.start_date = filters.startDate.format("YYYY-MM-DD");
+      params.end_date = filters.endDate.format("YYYY-MM-DD");
     }
     return params;
   };
@@ -104,6 +111,25 @@ export default function Compliance() {
 
     setStartDate(start);
     setEndDate(end);
+  };
+
+  const hasValidCustomDateRange =
+    tenure !== "custom" ||
+    Boolean(
+      startDate?.isValid?.() &&
+        endDate?.isValid?.() &&
+        !startDate.isAfter(endDate, "day")
+    );
+
+  const handleSubmit = () => {
+    if (isSubmitting || !hasValidCustomDateRange) {
+      return;
+    }
+
+    const nextFilters = { taxType, tenure, startDate, endDate };
+    setIsSubmitting(true);
+    setAppliedFilters(nextFilters);
+    fetchComplianceData(nextFilters).finally(() => setIsSubmitting(false));
   };
 
   // Calculate KPIs from available data
@@ -151,10 +177,10 @@ export default function Compliance() {
   };
 
   // Fetch all compliance data
-  const fetchComplianceData = async () => {
+  const fetchComplianceData = async (filters = appliedFilters) => {
     setLoading(true);
     try {
-      const params = getParams();
+      const params = getParams(filters);
       
       const [
         taxFilingRes,
@@ -211,10 +237,6 @@ export default function Compliance() {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchComplianceData();
-  }, [taxType, tenure, startDate, endDate]);
 
   // Prepare chart configurations
   const taxFilingOptions = {
@@ -343,9 +365,12 @@ export default function Compliance() {
     (item) => item.industry === selectedIndustry
   );
 
-  const hasChartData = (series) => {
-    return series.some(s => s.data.some(v => v > 0));
-  };
+  const chartSkeleton = (height) => (
+    <Box>
+      <Skeleton variant="text" width="40%" height={32} />
+      <Skeleton variant="rectangular" height={height} sx={{ borderRadius: 2 }} />
+    </Box>
+  );
 
   // Table columns for detailed views
   const filingColumns = [
@@ -514,12 +539,21 @@ export default function Compliance() {
                 <Typography variant="subtitle2" color="textSecondary" gutterBottom>
                   {card.title}
                 </Typography>
-                <Typography variant="h4" component="div" sx={{ fontWeight: "bold", color: card.color }}>
-                  {card.value}
-                </Typography>
-                <Typography variant="caption" color="textSecondary">
-                  {card.subtitle}
-                </Typography>
+                {loading ? (
+                  <>
+                    <Skeleton variant="text" width="60%" height={40} />
+                    <Skeleton variant="text" width="80%" height={20} />
+                  </>
+                ) : (
+                  <>
+                    <Typography variant="h4" component="div" sx={{ fontWeight: "bold", color: card.color }}>
+                      {card.value}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      {card.subtitle}
+                    </Typography>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -588,7 +622,7 @@ export default function Compliance() {
                         format="DD/MM/YYYY"
                         value={startDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
                           setStartDate(newValue);
                         }}
                         slotProps={{
@@ -600,7 +634,7 @@ export default function Compliance() {
                         format="DD/MM/YYYY"
                         value={endDate}
                         onChange={(newValue) => {
-                          if (!newValue || !newValue.isValid()) return;
+                          if (newValue && !newValue.isValid()) return;
                           setEndDate(newValue);
                         }}
                         slotProps={{
@@ -615,6 +649,7 @@ export default function Compliance() {
                       <span>{endDate.format("DD-MM-YYYY")}</span>
                     </div>
                   )}
+                  <Button size="small" variant="contained" disabled={isSubmitting || loading || !hasValidCustomDateRange} onClick={handleSubmit}>Submit</Button>
                 </div>
               </div>
 
@@ -628,6 +663,7 @@ export default function Compliance() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Tax Filing vs Non-Filing by Industry</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => setChartView((v) => ({ ...v, filing: !v.filing }))}>{chartView.filing ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={() => handleExport("/tax-filing", "tax_filing")}
@@ -636,16 +672,16 @@ export default function Compliance() {
                       </button>
                     </div>
                     <div className="card-body">
-                      {taxFilingData.length > 0 && hasChartData(taxFilingSeries) ? (
+                      {loading ? (
+                        chartSkeleton(400)
+                      ) : taxFilingData.length > 0 && chartView.filing ? (
                         <Chart
                           options={taxFilingOptions}
                           series={taxFilingSeries}
                           type="bar"
                           height={400}
                         />
-                      ) : (
-                        <div className="no-data-message">No tax filing data available for the selected criteria</div>
-                      )}
+                      ) : taxFilingData.length > 0 ? <DataTable columns={filingColumns} data={filterFilingData()} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>
@@ -655,6 +691,7 @@ export default function Compliance() {
                   <div className="card dashboard-card">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <span>Delayed vs On-Time Returns</span>
+                      <button className="btn btn-outline-primary btn-sm" onClick={() => setChartView((v) => ({ ...v, timeliness: !v.timeliness }))}>{chartView.timeliness ? "View Table" : "View Chart"}</button>
                       <button
                         className="btn btn-success btn-sm d-flex align-items-center gap-1"
                         onClick={() => handleExport("/timeliness", "timeliness")}
@@ -663,26 +700,27 @@ export default function Compliance() {
                       </button>
                     </div>
                     <div className="card-body">
-                      {timelinessData.length > 0 && hasChartData(timelinessSeries) ? (
+                      {loading ? (
+                        chartSkeleton(400)
+                      ) : timelinessData.length > 0 && chartView.timeliness ? (
                         <Chart
                           options={timelinessOptions}
                           series={timelinessSeries}
                           type="bar"
                           height={400}
                         />
-                      ) : (
-                        <div className="no-data-message">No timeliness data available for the selected criteria</div>
-                      )}
+                      ) : timelinessData.length > 0 ? <DataTable columns={timelinessColumns} data={filterTimelinessData()} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                     </div>
                   </div>
                 </div>
 
                 {/* Profitability Chart (CIT only) */}
-                {taxType === "cit" && (parseFloat(kpiMetrics.profitability_rate) || 0) > 0 && (
+                {taxType === "cit" && (loading || (parseFloat(kpiMetrics.profitability_rate) || 0) > 0) && (
                   <div className="col-lg-6 col-md-12 mb-4 dashboard-card-col">
                     <div className="card dashboard-card">
                       <div className="card-header d-flex justify-content-between align-items-center">
                         <span>Profit vs Loss by Segment</span>
+                        <button className="btn btn-outline-primary btn-sm" onClick={() => setChartView((v) => ({ ...v, profitability: !v.profitability }))}>{chartView.profitability ? "View Table" : "View Chart"}</button>
                         <button
                           className="btn btn-success btn-sm d-flex align-items-center gap-1"
                           onClick={() => handleExport("/profitability", "profitability")}
@@ -691,16 +729,16 @@ export default function Compliance() {
                         </button>
                       </div>
                       <div className="card-body">
-                        {profitabilityData.length > 0 && hasChartData(profitabilitySeries) ? (
+                        {loading ? (
+                          chartSkeleton(400)
+                        ) : profitabilityData.length > 0 && chartView.profitability ? (
                           <Chart
                             options={profitabilityOptions}
                             series={profitabilitySeries}
                             type="bar"
                             height={400}
                           />
-                        ) : (
-                          <div className="no-data-message">No profitability data available for the selected criteria</div>
-                        )}
+                        ) : profitabilityData.length > 0 ? <DataTable columns={profitabilityColumns} data={filterProfitabilityData()} customStyles={tableCustomStyles} pagination paginationPerPage={10} dense /> : <EmptyState message="No records available for the selected criteria" />}
                       </div>
                     </div>
                   </div>
@@ -730,7 +768,9 @@ export default function Compliance() {
                           </Select>
                         </FormControl>
                       </div>
-                      {selectedIndustryData ? (
+                      {loading ? (
+                        chartSkeleton(210)
+                      ) : selectedIndustryData ? (
                         <div>
                           <Grid container spacing={2}>
                             <Grid item xs={6}>

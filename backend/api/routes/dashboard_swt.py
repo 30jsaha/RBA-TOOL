@@ -401,6 +401,7 @@ def swt_vs_salary():
         tin_query = text(f"""
             SELECT
                 pr.tin AS tin,
+                MAX(pr.taxpayer_name) AS taxpayer_name,
                 COUNT(*) AS record_count,
                 MAX(pr.tax_period_year) AS latest_year,
                 MAX(pr.tax_period_month) AS latest_month
@@ -419,50 +420,61 @@ def swt_vs_salary():
         tin_rows = db.session.execute(tin_query, date_params).fetchall()
         available_tins = [
             {
+                "tin": "ALL",
+                "name": "All Taxpayers",
+                "label": "ALL - All Taxpayers",
+            }
+        ] + [
+            {
                 "tin": str(row.tin).strip(),
-                "label": str(row.tin).strip(),
+                "name": (row.taxpayer_name or "").strip(),
+                "label": f"{str(row.tin).strip()} - {row.taxpayer_name.strip()}" if row.taxpayer_name and row.taxpayer_name.strip() else str(row.tin).strip(),
             }
             for row in tin_rows
             if row.tin is not None and str(row.tin).strip()
         ]
 
-        selected_tin = None
-        available_tin_values = {item["tin"] for item in available_tins}
+        available_tin_map = {item["tin"].upper(): item["tin"] for item in available_tins}
+        if requested_tin and requested_tin.upper() in available_tin_map:
+            selected_tin = available_tin_map[requested_tin.upper()]
+        else:
+            selected_tin = "ALL"
 
-        if requested_tin and requested_tin in available_tin_values:
-            selected_tin = requested_tin
-        elif available_tins:
-            selected_tin = available_tins[0]["tin"]
-
-        if not selected_tin:
-            return jsonify({
-                "selected_tin": None,
-                "available_tins": [],
-                "chart_data": [],
-                "categories": [],
-                "series": [
-                    {"name": "SWT Deducted", "data": []},
-                    {"name": "Total Salary Wages Paid", "data": []}
-                ]
-            })
-
-        chart_params = {**date_params, "selected_tin": selected_tin}
-        chart_query = text(f"""
-            SELECT
-                pr.tax_period_year,
-                pr.tax_period_month,
-                SUM(COALESCE(pr.total_salary_wages_paid, 0)) AS salary_wages_paid,
-                SUM(COALESCE(pr.total_swt_tax_deducted, 0)) AS swt_paid
-            FROM swt_fraud_justification pr
-            WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
-              AND pr.tin IS NOT NULL
-              AND pr.tin <> ''
-              AND pr.tax_period_year IS NOT NULL
-              AND pr.tax_period_month IS NOT NULL
-              AND pr.tin = :selected_tin
-            GROUP BY pr.tax_period_year, pr.tax_period_month
-            ORDER BY pr.tax_period_year DESC, pr.tax_period_month DESC
-        """)
+        if selected_tin.upper() == "ALL":
+            chart_params = date_params
+            chart_query = text(f"""
+                SELECT
+                    pr.tax_period_year,
+                    pr.tax_period_month,
+                    SUM(COALESCE(pr.total_salary_wages_paid, 0)) AS salary_wages_paid,
+                    SUM(COALESCE(pr.total_swt_tax_deducted, 0)) AS swt_paid
+                FROM swt_fraud_justification pr
+                WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
+                  AND pr.tin IS NOT NULL
+                  AND pr.tin <> ''
+                  AND pr.tax_period_year IS NOT NULL
+                  AND pr.tax_period_month IS NOT NULL
+                GROUP BY pr.tax_period_year, pr.tax_period_month
+                ORDER BY pr.tax_period_year DESC, pr.tax_period_month DESC
+            """)
+        else:
+            chart_params = {**date_params, "selected_tin": selected_tin}
+            chart_query = text(f"""
+                SELECT
+                    pr.tax_period_year,
+                    pr.tax_period_month,
+                    SUM(COALESCE(pr.total_salary_wages_paid, 0)) AS salary_wages_paid,
+                    SUM(COALESCE(pr.total_swt_tax_deducted, 0)) AS swt_paid
+                FROM swt_fraud_justification pr
+                WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
+                  AND pr.tin IS NOT NULL
+                  AND pr.tin <> ''
+                  AND pr.tax_period_year IS NOT NULL
+                  AND pr.tax_period_month IS NOT NULL
+                  AND pr.tin = :selected_tin
+                GROUP BY pr.tax_period_year, pr.tax_period_month
+                ORDER BY pr.tax_period_year DESC, pr.tax_period_month DESC
+            """)
 
         payload = _cached_json(
             "swt_vs_salary",
@@ -502,11 +514,11 @@ def swt_vs_salary():
                                 for r in rows
                                 if r.tax_period_year is not None and r.tax_period_month is not None
                             ],
-                        }
+                        },
                     ],
                 }
             )(db.session.execute(chart_query, chart_params).fetchall()),
-            extra=selected_tin or "all",
+            extra=f"tin:{selected_tin.upper()}"
         )
 
         return jsonify(payload)
@@ -616,7 +628,7 @@ def segmentation_distribution():
         _log_timing("segmentation_distribution", started_at)
 
 
-def _build_latest_swt_records_data(date_params):
+def _build_latest_swt_records_data(date_params, limit=50, offset=0):
     query = text(f"""
         SELECT 
             p.tin,
@@ -634,10 +646,10 @@ def _build_latest_swt_records_data(date_params):
             ON CAST(p.tin AS CHAR(50) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci =
                CONVERT(sm.tin USING utf8mb4) COLLATE utf8mb4_unicode_ci
         WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
-        ORDER BY p.uploaded_at DESC
-        LIMIT 20
+        ORDER BY p.uploaded_at DESC, p.id DESC
+        LIMIT :limit OFFSET :offset
     """)
-    rows = db.session.execute(query, date_params).fetchall()
+    rows = db.session.execute(query, {**date_params, "limit": limit, "offset": offset}).fetchall()
     return [
         {
             "tin": r.tin,
@@ -661,19 +673,32 @@ def latest_swt_records():
     date_params = None
     try:
         date_params = _get_period_bounds()
+        try:
+            limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            offset = 0
 
         def build_payload():
-            data = _build_latest_swt_records_data(date_params)
+            data = _build_latest_swt_records_data(date_params, limit, offset)
+            total = db.session.execute(text(f"""
+                SELECT COUNT(*) FROM swt_fraud_justification p
+                WHERE {_period_filter_sql("p.tax_period_year", "p.tax_period_month")}
+            """), date_params).scalar() or 0
             return {
                 "status": "success",
                 "total_records": len(data),
                 "excel_download": url_for('dashboard_swt.download_latest_swt_records_excel', **request.args),
                 "records": data,
+                "pagination": {"limit": limit, "offset": offset, "total": total, "has_more": offset + len(data) < total},
             }
 
         payload = _cached_json(
             "latest_records",
-            date_params,
+            {**date_params, "limit": limit, "offset": offset},
             900,
             build_payload,
         )

@@ -400,16 +400,33 @@ def get_summary():
         # ---------------- GST Fraud Summary ----------------
         fraud = dict(db.session.execute(text(f"""
             SELECT
-                SUM(CASE WHEN COALESCE(pr.is_fraud, 0) = 1 THEN 1 ELSE 0 END) AS total_fraud_cases,
+                SUM(CASE WHEN LOWER(COALESCE(pr.predicted_fraud, '')) = 'fraud' THEN 1 ELSE 0 END) AS total_fraud_cases,
                 ROUND(
                     (
-                        SUM(CASE WHEN COALESCE(pr.is_fraud, 0) = 1 THEN 1 ELSE 0 END) * 100.0
+                        SUM(CASE WHEN LOWER(COALESCE(pr.predicted_fraud, '')) = 'fraud' THEN 1 ELSE 0 END) * 100.0
                     ) / NULLIF(COUNT(*), 0),
                 2) AS fraud_percentage,
                 '' AS fraud_reasons
             FROM gst_fraud_justification pr
             WHERE {where_period}
         """), params).fetchone()._mapping)
+
+        gst_fraud_records = [
+            dict(row) for row in db.session.execute(text(f"""
+                SELECT
+                    pr.tax_period_year AS year,
+                    pr.tax_period_month AS month,
+                    pr.predicted_fraud,
+                    CASE
+                        WHEN LOWER(COALESCE(pr.predicted_fraud, '')) = 'fraud'
+                        THEN COALESCE(NULLIF(TRIM(pr.explanation), ''), '')
+                        ELSE ''
+                    END AS fraud_reason
+                FROM gst_fraud_justification pr
+                WHERE {where_period}
+                ORDER BY pr.tax_period_year DESC, COALESCE(pr.tax_period_month, 12) DESC, pr.id DESC
+            """), params).mappings().all()
+        ]
 
         ratio = round(
             (input_output.get("total_input_credit", 0) or 0) /
@@ -427,7 +444,8 @@ def get_summary():
                 "payment_delay_count": gst_compliance.get("payment_delay_count", 0),
                 "average_delay_days": gst_compliance.get("average_delay_days", 0)
             },
-            "fraud_summary": fraud
+            "fraud_summary": fraud,
+            "fraud_records": gst_fraud_records
         }
 
         # ==========================
@@ -528,7 +546,7 @@ def get_summary():
         trm = db.session.execute(text("""
             SELECT
                 taxcentre, tin, taxpayertype, taxpayername, maintradename,
-                enterprisetype, entstartdate,
+                enterprisetype, entrydate,
                 individualsituation,
                 pitaccountno, citaccountno, swtaccountno, gstaccountno,
                 iwtaccountno, mfwtaccountno, fcwtaccountno,
@@ -653,10 +671,24 @@ def get_summary():
               AND tax_period_year BETWEEN :sy AND :ey
         """), {"tin": tin, "sy": start_y, "ey": end_y}).fetchone()._mapping
 
+        cit_fraud_records = [
+            dict(row) for row in db.session.execute(text("""
+                SELECT
+                    pr.tax_period_year AS year,
+                    pr.predicted_fraud,
+                    pr.Justification AS justification
+                FROM cit_fraud_justification pr
+                WHERE TRIM(pr.tin) = TRIM(:tin)
+                  AND pr.tax_period_year BETWEEN :sy AND :ey
+                  AND LOWER(COALESCE(pr.predicted_fraud, '')) = 'fraud'
+                ORDER BY pr.tax_period_year DESC, pr.id DESC
+            """), {"tin": tin, "sy": start_y, "ey": end_y}).mappings().all()
+        ]
+
         gst_risk_row = db.session.execute(text(f"""
             SELECT
                 COUNT(*) AS total_records,
-                SUM(CASE WHEN COALESCE(pr.is_fraud, 0) = 1 THEN 1 ELSE 0 END) AS fraud_count
+                SUM(CASE WHEN LOWER(COALESCE(pr.predicted_fraud, '')) = 'fraud' THEN 1 ELSE 0 END) AS fraud_count
             FROM gst_fraud_justification pr
             WHERE {where_period}
         """), params).fetchone()._mapping
@@ -834,7 +866,7 @@ def get_summary():
             {"label": "Tax Centre", "value": _to_display(trm_map.get("taxcentre"))},
             {"label": "TaxpayerType", "value": _to_display(trm_map.get("taxpayertype"))},
             {"label": "EnterpriseType", "value": _to_display(trm_map.get("enterprisetype"))},
-            {"label": "Start Date", "value": _to_display(trm_map.get("entstartdate"))},
+            {"label": "Start Date", "value": _to_display(trm_map.get("entrydate"))},
 
             {"label": "TAX ACCOUNT DETAILS", "value": ""},
             {"label": "PITTaxAccount", "value": _to_display(trm_map.get("pitaccountno"))},
@@ -901,6 +933,7 @@ def get_summary():
         response = {
             "gst": gst_response,
             "swt": swt_response,
+            "cit": {"fraud_records": cit_fraud_records},
             "structured_report": structured_report
         }
 

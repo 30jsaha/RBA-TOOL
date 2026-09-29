@@ -205,6 +205,133 @@ def list_upload_history():
 
 
 # ======================================================
+# GET /api/upload-history/details
+# Supports:
+# /details?tax_type=gst|swt|cit|all
+# /details?page=1&limit=50
+# /details?search=filename
+# ======================================================
+@bp.get("/details")
+@jwt_required()
+def list_upload_history_with_user_roles():
+    tax_filter = request.args.get("tax_type")      # gst | swt | cit | all | None
+    search = request.args.get("search")            # filename
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 50))
+    offset = (page - 1) * limit
+
+    params = {"limit": limit, "offset": offset}
+    where = []
+    _apply_upload_history_scope(where, params, table_alias="ul")
+
+    if tax_filter and tax_filter.lower() != "all":
+        where.append("LOWER(ul.tax_type) = :tax_type")
+        params["tax_type"] = tax_filter.lower()
+
+    if search:
+        where.append("(ul.filename LIKE :search OR uh.filename LIKE :search)")
+        params["search"] = f"%{search}%"
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    # Fixed query with proper joins to upload_history, users, and user_roles tables
+    query = text(f"""
+        SELECT
+            ul.id AS upload_id,
+            COALESCE(uh.filename, ul.filename) AS file_name,
+            COALESCE(uh.row_count, ul.row_count, 0) AS row_count,
+            COALESCE(uh.file_size_kb, ul.file_size_kb, 0) AS file_size_kb,
+            ROUND(COALESCE(uh.file_size_kb, ul.file_size_kb, 0) / 1024.0, 2) AS file_size_mb,
+            COALESCE(u.full_name, 'Unknown User') AS uploaded_by,
+            COALESCE(r.name, 'No Role Assigned') AS role,
+            UPPER(COALESCE(ul.tax_type, '')) AS tax_parameter,
+            DATE(ul.uploaded_at) AS date,
+            TIME(ul.uploaded_at) AS time,
+            NULL AS tin,
+            NULL AS taxpayer_name,
+            NULL AS taxpayer_type,
+            NULL AS segmentation,
+            COALESCE(ul.row_count, 0) AS total_sales,
+            0 AS gst_payable,
+            0 AS gst_refundable,
+            COALESCE(ul.status, 'Unknown') AS fraud,
+            COALESCE(ul.error_message, '') AS fraud_reason,
+            'Normal' AS risk_type
+        FROM upload_log ul
+        LEFT JOIN upload_history uh ON (ul.upload_batch_id = uh.upload_batch_id OR ul.id = uh.id)
+        LEFT JOIN users u ON ul.user_id = u.id
+        LEFT JOIN user_roles ur ON u.id = ur.user_id
+        LEFT JOIN roles r ON ur.role_id = r.id
+        {where_sql}
+        ORDER BY ul.uploaded_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+
+    try:
+        rows = db.session.execute(query, params).fetchall()
+    except Exception as e:
+        return jsonify({"status": "error", "message": "Database query failed", "error": str(e)}), 500
+
+    if not rows:
+        return jsonify({
+            "status": "success",
+            "page": page,
+            "limit": limit,
+            "total_records": 0,
+            "total_pages": 0,
+            "records": []
+        }), 200
+
+    data = [
+        {
+            "upload_id": r[0],
+            "file_name": r[1],
+            "row_count": int(r[2]) if r[2] is not None else 0,
+            "file_size_kb": float(r[3]) if r[3] is not None else 0.0,
+            "file_size_mb": float(r[4]) if r[4] is not None else 0.0,
+            "uploaded_by": r[5],
+            "role": r[6],
+            "tax_parameter": r[7],
+            "date": str(r[8]),
+            "time": str(r[9]),
+            "Tin": r[10],
+            "Taxpayer_Name": r[11],
+            "Type": r[12],
+            "Segmentation": r[13],
+            "Total_Sales": r[14],
+            "Gst_Payable": r[15],
+            "Gst_Refundable": r[16],
+            "Fraud": r[17],
+            "Fraud_Reason": r[18],
+            "Risk_Type": r[19],
+        }
+        for r in rows
+    ]
+
+    # Also get total count for pagination
+    count_query = text(f"""
+        SELECT COUNT(*) as total
+        FROM upload_log ul
+        LEFT JOIN users u ON ul.user_id = u.id
+        LEFT JOIN user_roles ur ON u.id = ur.user_id
+        LEFT JOIN roles r ON ur.role_id = r.id
+        {where_sql}
+    """)
+    
+    total_count = db.session.execute(count_query, params).scalar() or 0
+    total_pages = (total_count + limit - 1) // limit
+
+    return jsonify({
+        "status": "success", 
+        "page": page, 
+        "limit": limit,
+        "total_records": total_count,
+        "total_pages": total_pages,
+        "records": data
+    }), 200
+
+
+# ======================================================
 # GET /api/upload-history/<tax_parameter>
 # ======================================================
 @bp.get("/<string:tax_parameter>")
@@ -244,126 +371,6 @@ def list_uploads_by_type(tax_parameter):
             for r in rows
         ]
     ), 200
-
-
-# ======================================================
-# GET /api/upload-history/details
-# Supports:
-# /details?tax_type=gst|swt|cit|all
-# /details?page=1&limit=50
-# /details?search=filename
-# ======================================================
-# ======================================================
-# GET /api/upload-history/details
-# Supports:
-# /details?tax_type=gst|swt|cit|all
-# /details?page=1&limit=50
-# /details?search=filename
-# ======================================================
-@bp.get("/details")
-@jwt_required()
-def list_upload_history_with_user_roles():
-    tax_filter = request.args.get("tax_type")      # gst | swt | cit | all | None
-    search = request.args.get("search")            # filename
-    page = int(request.args.get("page", 1))
-    limit = int(request.args.get("limit", 50))
-    offset = (page - 1) * limit
-
-    params = {"limit": limit, "offset": offset}
-    where = []
-    _apply_upload_history_scope(where, params, table_alias="ul")
-
-    if tax_filter and tax_filter.lower() != "all":
-        where.append("LOWER(ul.tax_type) = :tax_type")
-        params["tax_type"] = tax_filter.lower()
-
-    if search:
-        where.append("ul.filename LIKE :search")
-        params["search"] = f"%{search}%"
-
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-
-    # Fixed query with proper joins to users and user_roles tables
-    query = text(f"""
-        SELECT
-            ul.id AS upload_id,
-            ul.filename AS file_name,
-            COALESCE(u.full_name, 'Unknown User') AS uploaded_by,
-            COALESCE(r.name, 'No Role Assigned') AS role,
-            UPPER(COALESCE(ul.tax_type, '')) AS tax_parameter,
-            DATE(ul.uploaded_at) AS date,
-            TIME(ul.uploaded_at) AS time,
-            NULL AS tin,
-            NULL AS taxpayer_name,
-            NULL AS taxpayer_type,
-            NULL AS segmentation,
-            COALESCE(ul.row_count, 0) AS total_sales,
-            0 AS gst_payable,
-            0 AS gst_refundable,
-            COALESCE(ul.status, 'Unknown') AS fraud,
-            COALESCE(ul.error_message, '') AS fraud_reason,
-            'Normal' AS risk_type
-        FROM upload_log ul
-        LEFT JOIN users u ON ul.user_id = u.id
-        LEFT JOIN user_roles ur ON u.id = ur.user_id
-        LEFT JOIN roles r ON ur.role_id = r.id
-        {where_sql}
-        ORDER BY ul.uploaded_at DESC
-        LIMIT :limit OFFSET :offset
-    """)
-
-    try:
-        rows = db.session.execute(query, params).fetchall()
-    except Exception as e:
-        return jsonify({"status": "error", "message": "Database query failed", "error": str(e)}), 500
-
-    if not rows:
-        return jsonify({"status": "error", "message": "No data found"}), 404
-
-    data = [
-        {
-            "upload_id": r[0],
-            "file_name": r[1],
-            "uploaded_by": r[2],
-            "role": r[3],
-            "tax_parameter": r[4],
-            "date": str(r[5]),
-            "time": str(r[6]),
-            "Tin": r[7],
-            "Taxpayer_Name": r[8],
-            "Type": r[9],
-            "Segmentation": r[10],
-            "Total_Sales": r[11],
-            "Gst_Payable": r[12],
-            "Gst_Refundable": r[13],
-            "Fraud": r[14],
-            "Fraud_Reason": r[15],
-            "Risk_Type": r[16],
-        }
-        for r in rows
-    ]
-
-    # Also get total count for pagination
-    count_query = text(f"""
-        SELECT COUNT(*) as total
-        FROM upload_log ul
-        LEFT JOIN users u ON ul.user_id = u.id
-        LEFT JOIN user_roles ur ON u.id = ur.user_id
-        LEFT JOIN roles r ON ur.role_id = r.id
-        {where_sql}
-    """)
-    
-    total_count = db.session.execute(count_query, params).scalar() or 0
-    total_pages = (total_count + limit - 1) // limit
-
-    return jsonify({
-        "status": "success", 
-        "page": page, 
-        "limit": limit,
-        "total_records": total_count,
-        "total_pages": total_pages,
-        "records": data
-    }), 200
 
 
 def _upload_history_raw_folder(tax_type):

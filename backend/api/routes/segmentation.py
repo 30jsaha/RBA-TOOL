@@ -10,6 +10,8 @@ from ..extensions import db
 from datetime import datetime, date, timedelta
 import traceback
 from sqlalchemy import text, tuple_, or_, inspect
+from sqlalchemy.exc import DBAPIError, OperationalError
+from utils.bulk_insert_utils import chunked_multi_insert
 import pickle
 from typing import List, Set, Dict, Tuple
 
@@ -27,7 +29,10 @@ bp = Blueprint("segmentation", __name__)
 UPLOAD_FOLDER = "uploads"
 OUTPUT_FOLDER = "outputs"
 SEGMENTED_FOLDER = "segmented"
-SEGMENTATION_BATCH_SIZE = 5000
+# The local MySQL server is configured with max_allowed_packet=1 MiB.  Keep
+# segmentation inserts deliberately small so PyMySQL's executemany statement
+# always stays under that server limit.
+SEGMENTATION_MASTER_INSERT_CHUNK_SIZE = 100
 SEGMENTATION_JOB_TABLE = "segmentation_jobs"
 SEGMENTATION_LOCK_NAME = "segmentation_background_job_lock"
 _SEGMENTATION_JOB_TABLE_READY = False
@@ -168,7 +173,11 @@ def _get_latest_upload_log(engine, user_id: int, tax_type: str):
         """.format(batch_select=batch_select)
         params = {"tax_type": tax_type}
 
-    return db.session.execute(text(sql), params).fetchone()
+    # Background jobs may run for several minutes. Do not retain the scoped
+    # request session's connection across the whole job; take a fresh pooled
+    # connection for this short query instead.
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params).fetchone()
 
 
 def _get_upload_log_by_id(engine, user_id: int, tax_type: str, upload_id: int):
@@ -196,7 +205,8 @@ def _get_upload_log_by_id(engine, user_id: int, tax_type: str, upload_id: int):
         """.format(batch_select=batch_select)
         params = {"upload_id": int(upload_id), "tax_type": tax_type}
 
-    return db.session.execute(text(sql), params).fetchone()
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params).fetchone()
 
 
 def _build_user_upload_filter(engine, table_name: str, alias: str, user_id: int, upload_row):
@@ -578,15 +588,16 @@ def _fetch_available_history_years(engine, table_name: str) -> Set[int]:
     if "tax_period_year" not in cols:
         raise RuntimeError(f"{table_name}.tax_period_year column does not exist")
 
-    rows = db.session.execute(
-        text(
-            f"""
-            SELECT DISTINCT tax_period_year
-            FROM {table_name}
-            WHERE tax_period_year IS NOT NULL
-            """
-        )
-    ).fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT DISTINCT tax_period_year
+                FROM {table_name}
+                WHERE tax_period_year IS NOT NULL
+                """
+            )
+        ).fetchall()
 
     available_years = set()
     for row in rows:
@@ -855,6 +866,17 @@ def _create_segmentation_job(engine, user_id: int, payload: Dict[str, str]) -> s
     return job_id
 
 
+def _is_retryable_mysql_disconnect(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return any(marker in message for marker in (
+        "lost connection",
+        "server has gone away",
+        "forcibly closed by the remote host",
+        "connection reset",
+        "winerror 10054",
+    ))
+
+
 def _update_segmentation_job(engine, job_id: str, **fields) -> None:
     if not fields:
         return
@@ -871,11 +893,22 @@ def _update_segmentation_job(engine, job_id: str, **fields) -> None:
     set_clause = ", ".join(f"{column} = :{column}" for column in fields.keys())
     params = {**fields, "job_id": job_id}
 
-    with engine.begin() as conn:
-        conn.execute(
-            text(f"UPDATE {SEGMENTATION_JOB_TABLE} SET {set_clause} WHERE job_id = :job_id"),
-            params,
-        )
+    for attempt in range(2):
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"UPDATE {SEGMENTATION_JOB_TABLE} SET {set_clause} WHERE job_id = :job_id"),
+                    params,
+                )
+            return
+        except (OperationalError, DBAPIError) as exc:
+            if attempt == 0 and _is_retryable_mysql_disconnect(exc):
+                # Drop the broken pooled connection and retry this idempotent
+                # job-state update once on a fresh connection.
+                engine.dispose()
+                time.sleep(1)
+                continue
+            raise
 
 
 def _get_segmentation_job(engine, job_id: str):
@@ -1297,13 +1330,29 @@ def _execute_segmentation_updates(
         )
 
     if not master_df.empty:
-        master_df.to_sql(
+        # Avoid pandas' 10,000-row multi-value INSERT. On MySQL/Windows that
+        # large single statement can be terminated by the server (2013/10054),
+        # leaving the background job permanently at 50%. This helper commits
+        # bounded chunks and retries once with a fresh connection if it is reset.
+        def _on_master_chunk(inserted_rows, all_rows, _chunk_index, _total_chunks):
+            if job_id:
+                _update_segmentation_job(
+                    engine,
+                    job_id,
+                    status="Running",
+                    current_step="Loading segmentation master rows",
+                    total_rows=all_rows,
+                    processed_rows=inserted_rows,
+                    percentage=50 + int((inserted_rows / all_rows) * 45),
+                )
+
+        chunked_multi_insert(
+            master_df,
             "taxpayer_segmentation_master",
-            con=engine,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=10000,
+            engine,
+            table_already_exists=True,
+            chunksize=SEGMENTATION_MASTER_INSERT_CHUNK_SIZE,
+            progress_callback=_on_master_chunk,
         )
 
     if job_id:

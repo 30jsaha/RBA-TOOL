@@ -1185,46 +1185,49 @@ def _run_gst_validation():
         }
 
         # Generate financial difference CSV (only when financial differences exist)
-        payload['financial_difference_count'] = int(payload.get('db_financial_differences_count') or 0)
+        payload['financial_difference_count'] = int(
+            payload.get('db_financial_difference_fields_count')
+            or payload.get('db_financial_differences_count')
+            or 0
+        )
         payload['financial_difference_file'] = None
         payload['financial_difference_file_path'] = None
         try:
             if payload['financial_difference_count'] > 0:
-                removed_path = result.get('removed_file_full_path')
                 conflict_tins = []
-                try:
-                    if removed_path and os.path.exists(removed_path):
-                        use_cols = ["tin", "reason", "taxpayer_name"]
-                        df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
-                        if "reason" in df_removed.columns:
-                            mask = df_removed["reason"].astype(str).str.lower().str.contains(
-                                "financial differences found against gst_fraud_justification", na=False
-                            )
-                            df_fin = df_removed.loc[mask]
-                            if "tin" in df_fin.columns:
-                                conflict_tins = df_fin["tin"].dropna().tolist()
-                except Exception:
-                    conflict_tins = []
+                for err in result.get('errors') or []:
+                    reason = str((err or {}).get('reason') or '').lower()
+                    if (
+                        'financial differences found against gst_fraud_justification' in reason
+                        or 'financial values differ from existing gst_fraud_justification record' in reason
+                    ):
+                        tin = str((err or {}).get('tin') or '').strip()
+                        if tin:
+                            conflict_tins.append(tin)
+                conflict_tins = list(dict.fromkeys(conflict_tins))
 
-                ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                payload['financial_difference_file'] = f'gst_financial_difference_{ts2}.csv'
-                payload['financial_difference_file_path'] = payload['financial_difference_file']
-                fd, temp_csv_path = tempfile.mkstemp(prefix='gst_financial_difference_', suffix='.csv')
-                os.close(fd)
-                try:
-                    _export_upload_conflicts_csv_from_db(
-                        "GST",
-                        conflict_tins,
-                        temp_csv_path,
-                    )
-                    if os.path.exists(temp_csv_path):
-                        write_encrypted_output_file(temp_csv_path, result.get('output_dir'), payload['financial_difference_file'])
-                finally:
+                if conflict_tins:
+                    ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    logical_name = f'gst_financial_difference_{ts2}.csv'
+                    fd, temp_csv_path = tempfile.mkstemp(prefix='gst_financial_difference_', suffix='.csv')
+                    os.close(fd)
                     try:
-                        if os.path.exists(temp_csv_path):
-                            os.remove(temp_csv_path)
-                    except Exception:
-                        pass
+                        wrote_csv = _export_upload_conflicts_csv_from_db(
+                            "GST",
+                            conflict_tins,
+                            temp_csv_path,
+                        )
+                        if wrote_csv and os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) > 0:
+                            write_encrypted_output_file(temp_csv_path, result.get('output_dir'), logical_name)
+                            if output_exists(result.get('output_dir'), logical_name):
+                                payload['financial_difference_file'] = logical_name
+                                payload['financial_difference_file_path'] = logical_name
+                    finally:
+                        try:
+                            if os.path.exists(temp_csv_path):
+                                os.remove(temp_csv_path)
+                        except Exception:
+                            pass
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
@@ -1356,46 +1359,46 @@ def _run_swt_validation():
             payload['errors'] = []
 
         # Generate financial difference CSV (only when financial differences exist)
-        payload['financial_difference_count'] = int(payload.get('db_financial_differences_count') or 0)
+        payload['financial_difference_count'] = int(
+            payload.get('db_financial_difference_fields_count')
+            or payload.get('db_financial_differences_count')
+            or 0
+        )
         payload['financial_difference_file'] = None
         payload['financial_difference_file_path'] = None
         try:
             if payload['financial_difference_count'] > 0:
-                removed_path = result.get('removed_file_full_path')
                 conflict_tins = []
-                try:
-                    if removed_path and os.path.exists(removed_path):
-                        use_cols = ["tin", "reason", "taxpayer_name"]
-                        df_removed = pd.read_csv(removed_path, usecols=lambda c: c in use_cols, low_memory=False)
-                        if "reason" in df_removed.columns:
-                            mask = df_removed["reason"].astype(str).str.lower().str.contains(
-                                "financial values differ from existing swt_fraud_justification record", na=False
-                            )
-                            df_fin = df_removed.loc[mask]
-                            if "tin" in df_fin.columns:
-                                conflict_tins = df_fin["tin"].dropna().tolist()
-                except Exception:
-                    conflict_tins = []
+                for err in result.get('errors') or []:
+                    reason = str((err or {}).get('reason') or '').lower()
+                    if 'financial values differ from existing swt_fraud_justification record' in reason:
+                        tin = str((err or {}).get('tin') or '').strip()
+                        if tin:
+                            conflict_tins.append(tin)
+                conflict_tins = list(dict.fromkeys(conflict_tins))
 
-                ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
-                payload['financial_difference_file'] = f'swt_financial_difference_{ts2}.csv'
-                payload['financial_difference_file_path'] = payload['financial_difference_file']
-                fd, temp_csv_path = tempfile.mkstemp(prefix='swt_financial_difference_', suffix='.csv')
-                os.close(fd)
-                try:
-                    _export_upload_conflicts_csv_from_db(
-                        "SWT",
-                        conflict_tins,
-                        temp_csv_path,
-                    )
-                    if os.path.exists(temp_csv_path):
-                        write_encrypted_output_file(temp_csv_path, result.get('output_dir'), payload['financial_difference_file'])
-                finally:
+                if conflict_tins:
+                    ts2 = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    logical_name = f'swt_financial_difference_{ts2}.csv'
+                    fd, temp_csv_path = tempfile.mkstemp(prefix='swt_financial_difference_', suffix='.csv')
+                    os.close(fd)
                     try:
-                        if os.path.exists(temp_csv_path):
-                            os.remove(temp_csv_path)
-                    except Exception:
-                        pass
+                        wrote_csv = _export_upload_conflicts_csv_from_db(
+                            "SWT",
+                            conflict_tins,
+                            temp_csv_path,
+                        )
+                        if wrote_csv and os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) > 0:
+                            write_encrypted_output_file(temp_csv_path, result.get('output_dir'), logical_name)
+                            if output_exists(result.get('output_dir'), logical_name):
+                                payload['financial_difference_file'] = logical_name
+                                payload['financial_difference_file_path'] = logical_name
+                    finally:
+                        try:
+                            if os.path.exists(temp_csv_path):
+                                os.remove(temp_csv_path)
+                        except Exception:
+                            pass
         except Exception:
             payload['financial_difference_file'] = None
             payload['financial_difference_file_path'] = None
@@ -1945,6 +1948,9 @@ def _run_cit_validation(output_dir_override=None):
                         except Exception:
                             pass
 
+                        if '_upload_row_id' not in cleaned_df.columns:
+                            cleaned_df['_upload_row_id'] = cleaned_df.index.astype('int64')
+
                         merged = cleaned_df.merge(
                             db_df,
                             on=key_cols,
@@ -1954,31 +1960,59 @@ def _run_cit_validation(output_dir_override=None):
                         )
 
                         matched = merged['_merge'].eq('both')
+                        diff_upload_ids = []
+                        dup_upload_ids = []
+                        diff_rows = pd.DataFrame()
                         if matched.any():
                             eq_mask = pd.Series(True, index=merged.index)
                             for c in fin_cols:
                                 if c in merged.columns and f"{c}__db" in merged.columns:
                                     eq_mask &= (merged[c].fillna(0.0) == merged[f"{c}__db"].fillna(0.0))
 
-                            dup_mask = matched & eq_mask
-                            diff_mask = matched & (~eq_mask)
-                            to_remove = dup_mask | diff_mask
+                            merged['_no_fin_diff'] = matched & eq_mask
+                            merged['_has_fin_diff'] = matched & (~eq_mask)
+
+                            agg = (
+                                merged.groupby('_upload_row_id', dropna=False)
+                                .agg(
+                                    _any_db_match=('_merge', lambda s: s.eq('both').any()),
+                                    _any_no_fin_diff=('_no_fin_diff', 'any'),
+                                    _any_fin_diff=('_has_fin_diff', 'any'),
+                                )
+                                .reset_index()
+                            )
+
+                            dup_upload_ids = agg.loc[
+                                agg['_any_db_match'] & agg['_any_no_fin_diff'],
+                                '_upload_row_id'
+                            ].tolist()
+                            diff_upload_ids = agg.loc[
+                                agg['_any_db_match'] & ~agg['_any_no_fin_diff'] & agg['_any_fin_diff'],
+                                '_upload_row_id'
+                            ].tolist()
+                            remove_ids = set(dup_upload_ids) | set(diff_upload_ids)
+
+                            diff_rows = (
+                                merged.loc[matched & merged['_upload_row_id'].isin(diff_upload_ids)]
+                                .sort_values(['_upload_row_id'])
+                                .groupby('_upload_row_id', as_index=False)
+                                .first()
+                            )
 
                             if debug_db:
                                 try:
                                     print('[CIT_DB_VALIDATION] matched keys:', int(matched.sum()))
-                                    print('[CIT_DB_VALIDATION] duplicate count:', int(dup_mask.sum()))
-                                    print('[CIT_DB_VALIDATION] financial difference count:', int(diff_mask.sum()))
+                                    print('[CIT_DB_VALIDATION] duplicate count:', int(len(dup_upload_ids)))
+                                    print('[CIT_DB_VALIDATION] financial difference count:', int(len(diff_upload_ids)))
                                 except Exception:
                                     pass
 
-                            if to_remove.any():
-                                removed_rows = merged.loc[to_remove].copy()
-                                # Build row-level reasons + errors; append to removed_df (no taxpayer merge)
+                            if remove_ids:
+                                removed_rows = cleaned_df.loc[cleaned_df['_upload_row_id'].isin(remove_ids)].copy()
                                 removed_rows['reason'] = [
-                                    "Duplicate CIT record already exists in cit_fraud_justification" if bool(dup_mask.loc[idx])
+                                    "Duplicate CIT record already exists in cit_fraud_justification" if rid in set(dup_upload_ids)
                                     else "Financial values differ from existing cit_fraud_justification record"
-                                    for idx in removed_rows.index
+                                    for rid in removed_rows['_upload_row_id'].tolist()
                                 ]
 
                                 for _, rr in removed_rows.iterrows():
@@ -1989,7 +2023,7 @@ def _run_cit_validation(output_dir_override=None):
                                         row_num = ''
                                     tin_val = '' if pd.isna(rr.get('tin')) else str(rr.get('tin')).strip()
 
-                                    if bool(dup_mask.loc[rr.name]):
+                                    if rr.get('_upload_row_id') in set(dup_upload_ids):
                                         db_duplicates_count += 1
                                         reason = "Duplicate CIT record already exists in cit_fraud_justification"
                                     else:
@@ -2005,7 +2039,7 @@ def _run_cit_validation(output_dir_override=None):
 
                                 # Persist conflicts to upload_conflicts (one row per differing field), GST-style
                                 try:
-                                    diff_rows = merged.loc[diff_mask].copy()
+                                    diff_rows = diff_rows.copy()
                                     if not diff_rows.empty:
                                         # Build in-memory export rows for the required financial-difference CSV.
                                         # We do NOT rely on `upload_conflicts` for CIT because many installs have
@@ -2217,14 +2251,14 @@ def _run_cit_validation(output_dir_override=None):
                                     pass
 
                                 # Append removed rows (drop db helper cols)
-                                drop_db_cols = [c for c in removed_rows.columns if c.endswith('__db') or c in ['_merge']]
+                                drop_db_cols = [c for c in removed_rows.columns if c.endswith('__db') or c in ['_merge', '_upload_row_id', '_db_key']]
                                 removed_rows.drop(columns=drop_db_cols, inplace=True, errors='ignore')
                                 base_cols = [c for c in cleaned_df.columns if c in removed_rows.columns]
                                 cols_out = base_cols + (['reason'] if 'reason' in removed_rows.columns else [])
                                 removed_df = pd.concat([removed_df, removed_rows[cols_out]], ignore_index=True)
 
                                 # Keep only non-removed in cleaned_df (for taxpayer merge + validated output)
-                                cleaned_df = merged.loc[~to_remove, cleaned_df.columns].copy()
+                                cleaned_df = cleaned_df.loc[~cleaned_df['_upload_row_id'].isin(remove_ids), [c for c in cleaned_df.columns if c not in ['_upload_row_id', '_db_key']]].copy()
         except Exception:
             # Do not fail CIT validation on DB issues
             if os.environ.get('CIT_DB_VALIDATION_DEBUG') == '1':
@@ -2298,7 +2332,11 @@ def _run_cit_validation(output_dir_override=None):
             removed_data_file_path = None
 
         # Generate financial difference CSV (only when financial differences exist)
-        financial_difference_count = int(db_financial_differences_count or 0)
+        financial_difference_count = int(
+            db_financial_difference_fields_count
+            or db_financial_differences_count
+            or 0
+        )
         financial_difference_file = None
         financial_difference_file_path = None
         try:

@@ -610,39 +610,26 @@ def gst_payable_vs_refundable():
 
         if use_yearly:
             query = text(f"""
-                SELECT 
-                    filtered.tax_period_year,
-                    SUM(filtered.gst_payable) AS gst_payable,
-                    SUM(filtered.gst_refundable) AS gst_refundable
-                FROM (
-                    SELECT
-                        pr.tax_period_year,
-                        COALESCE(pr.gst_payable, 0) AS gst_payable,
-                        COALESCE(pr.gst_refundable, 0) AS gst_refundable
-                    FROM gst_fraud_justification pr
-                    WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
-                ) AS filtered
-                GROUP BY filtered.tax_period_year
-                ORDER BY filtered.tax_period_year
+                SELECT
+                    pr.tax_period_year,
+                    SUM(COALESCE(pr.gst_payable, 0)) AS gst_payable,
+                    SUM(COALESCE(pr.gst_refundable, 0)) AS gst_refundable
+                FROM gst_fraud_justification pr
+                WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
+                GROUP BY pr.tax_period_year
+                ORDER BY pr.tax_period_year
             """)
         else:
             query = text(f"""
-                SELECT 
-                    filtered.tax_period_year,
-                    filtered.tax_period_month,
-                    SUM(filtered.gst_payable) AS gst_payable,
-                    SUM(filtered.gst_refundable) AS gst_refundable
-                FROM (
-                    SELECT
-                        pr.tax_period_year,
-                        pr.tax_period_month,
-                        COALESCE(pr.gst_payable, 0) AS gst_payable,
-                        COALESCE(pr.gst_refundable, 0) AS gst_refundable
-                    FROM gst_fraud_justification pr
-                    WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
-                ) AS filtered
-                GROUP BY filtered.tax_period_year, filtered.tax_period_month
-                ORDER BY filtered.tax_period_year, filtered.tax_period_month
+                SELECT
+                    pr.tax_period_year,
+                    pr.tax_period_month,
+                    SUM(COALESCE(pr.gst_payable, 0)) AS gst_payable,
+                    SUM(COALESCE(pr.gst_refundable, 0)) AS gst_refundable
+                FROM gst_fraud_justification pr
+                WHERE {_period_filter_sql("pr.tax_period_year", "pr.tax_period_month")}
+                GROUP BY pr.tax_period_year, pr.tax_period_month
+                ORDER BY pr.tax_period_year, pr.tax_period_month
             """)
 
         payload = _cached_json(

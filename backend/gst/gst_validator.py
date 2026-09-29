@@ -2,6 +2,230 @@
 import pandas as pd
 import logging
 from collections import defaultdict
+from utils.auth_helper import get_authenticated_user_id
+
+
+def _sanitize_conflict_field_name(field_name):
+    if field_name is None:
+        return field_name
+    try:
+        value = str(field_name).strip()
+    except Exception:
+        return field_name
+    if not value:
+        return value
+    value = value.replace("'", "")
+    value = value.replace(" ", "_")
+    while "__" in value:
+        value = value.replace("__", "_")
+    return value.strip("_")
+
+
+def _is_ignored_conflict_field_name(field_name) -> bool:
+    try:
+        normalized = str(field_name or "").strip().lower().replace(" ", "")
+    except Exception:
+        return False
+    return normalized in ("unnamed:_0", "unnamed:0", "unnamed_0")
+
+
+def _normalize_conflict_identifier(value):
+    if value is None:
+        return ""
+    try:
+        normalized = str(value).strip()
+    except Exception:
+        return ""
+    if normalized.endswith(".0") and normalized[:-2].isdigit():
+        normalized = normalized[:-2]
+    return normalized
+
+
+def _coerce_conflict_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+
+def _normalize_conflict_value(value):
+    try:
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            value = 0
+        return round(float(value), 2)
+    except Exception:
+        try:
+            return str(value).strip()
+        except Exception:
+            return ""
+
+
+def _resolve_source_meta_for_conflict_row(conflict_row: dict):
+    """
+    Resolve the exact GST source row for a financial-difference conflict before
+    inserting it into `upload_conflicts`.
+
+    Identity is based on the existing GST business keys plus the previous field
+    value to disambiguate matched rows. The source row must belong to the same
+    uploading user, and ambiguous matches are rejected instead of guessed.
+    """
+    try:
+        from config.db_config import get_mysql_engine
+        from sqlalchemy import text
+    except Exception:
+        return (None, None, None)
+
+    try:
+        field_name = _sanitize_conflict_field_name(conflict_row.get("field_name"))
+        if not field_name or _is_ignored_conflict_field_name(field_name):
+            print("[GST_CONFLICT_RESOLVE] Missing or ignored field_name; skipping source resolution.")
+            return (None, None, None)
+
+        user_id = _coerce_conflict_int(conflict_row.get("user_id"))
+        tin_s = _normalize_conflict_identifier(conflict_row.get("tin"))
+        tax_account_s = _normalize_conflict_identifier(conflict_row.get("tax_account_number"))
+        assessment_s = _normalize_conflict_identifier(conflict_row.get("assessment_number"))
+        year_i = _coerce_conflict_int(conflict_row.get("tax_period_year"))
+        month_i = _coerce_conflict_int(conflict_row.get("tax_period_month"))
+        expected_batch_id = _normalize_conflict_identifier(conflict_row.get("upload_batch_id"))
+        previous_value = conflict_row.get("previous_value")
+
+        if user_id is None:
+            print(
+                "[GST_CONFLICT_RESOLVE] Missing conflict user_id; cannot safely resolve source row. "
+                f"keys={{'tin': '{tin_s}', 'tax_account_number': '{tax_account_s}', "
+                f"'tax_period_year': {year_i}, 'tax_period_month': {month_i}, "
+                f"'assessment_number': '{assessment_s}', 'field_name': '{field_name}'}}"
+            )
+            return (None, None, None)
+
+        if not tin_s or not tax_account_s or year_i is None or month_i is None or not assessment_s:
+            print(
+                "[GST_CONFLICT_RESOLVE] Incomplete GST conflict identity; cannot safely resolve source row. "
+                f"keys={{'user_id': {user_id}, 'tin': '{tin_s}', 'tax_account_number': '{tax_account_s}', "
+                f"'tax_period_year': {year_i}, 'tax_period_month': {month_i}, "
+                f"'assessment_number': '{assessment_s}', 'field_name': '{field_name}'}}"
+            )
+            return (None, None, None)
+
+        engine = get_mysql_engine()
+        try:
+            with engine.connect() as conn:
+                cols_res = conn.execute(
+                    text(
+                        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name"
+                    ),
+                    {"table_name": "gst_fraud_justification"},
+                )
+                cols = set((row[0] or "").lower() for row in cols_res.fetchall())
+                if field_name.lower() not in cols:
+                    print(
+                        "[GST_CONFLICT_RESOLVE] Field missing from gst_fraud_justification; "
+                        f"field_name='{field_name}'"
+                    )
+                    return (None, None, None)
+
+                select_cols = ["id"]
+                has_batch = "upload_batch_id" in cols
+                has_name = "taxpayer_name" in cols
+                has_uploaded_at = "uploaded_at" in cols
+                if has_batch:
+                    select_cols.append("upload_batch_id")
+                if has_name:
+                    select_cols.append("taxpayer_name")
+                if has_uploaded_at:
+                    select_cols.append("uploaded_at")
+                select_cols.append(f"`{field_name}` AS _db_val")
+
+                where_parts = [
+                    "CAST(COALESCE(user_id, 0) AS SIGNED) = :user_id",
+                    "TRIM(CAST(tin AS CHAR)) = :tin",
+                    "TRIM(CAST(tax_account_number AS CHAR)) = :tax_account_number",
+                    "tax_period_year = :tax_period_year",
+                    "tax_period_month = :tax_period_month",
+                    "TRIM(CAST(assessment_number AS CHAR)) = :assessment_number",
+                ]
+                params = {
+                    "user_id": int(user_id),
+                    "tin": tin_s,
+                    "tax_account_number": tax_account_s,
+                    "tax_period_year": year_i,
+                    "tax_period_month": month_i,
+                    "assessment_number": assessment_s,
+                }
+                if expected_batch_id and has_batch:
+                    where_parts.append("TRIM(CAST(upload_batch_id AS CHAR)) = :upload_batch_id")
+                    params["upload_batch_id"] = expected_batch_id
+
+                query = (
+                    f"SELECT {', '.join(select_cols)} "
+                    "FROM `gst_fraud_justification` "
+                    f"WHERE {' AND '.join(where_parts)} "
+                )
+                if has_uploaded_at:
+                    query += "ORDER BY uploaded_at DESC, id DESC"
+                else:
+                    query += "ORDER BY id DESC"
+
+                rows = conn.execute(text(query), params).mappings().all()
+                if not rows:
+                    print(
+                        "[GST_CONFLICT_RESOLVE] No same-user GST source row matched conflict identity. "
+                        f"keys={{'user_id': {user_id}, 'tin': '{tin_s}', 'tax_account_number': '{tax_account_s}', "
+                        f"'tax_period_year': {year_i}, 'tax_period_month': {month_i}, "
+                        f"'assessment_number': '{assessment_s}', 'field_name': '{field_name}', "
+                        f"'upload_batch_id': '{expected_batch_id or None}'}}"
+                    )
+                    return (None, None, None)
+
+                wanted_value = _normalize_conflict_value(previous_value)
+                matches = []
+                for row in rows:
+                    if _normalize_conflict_value(row.get("_db_val")) != wanted_value:
+                        continue
+                    matches.append(row)
+
+                if len(matches) == 1:
+                    match = matches[0]
+                    return (
+                        match.get("id"),
+                        match.get("upload_batch_id") if has_batch else None,
+                        match.get("taxpayer_name") if has_name else None,
+                    )
+
+                if not matches:
+                    print(
+                        "[GST_CONFLICT_RESOLVE] No GST source row matched previous_value for same-user conflict. "
+                        f"keys={{'user_id': {user_id}, 'tin': '{tin_s}', 'tax_account_number': '{tax_account_s}', "
+                        f"'tax_period_year': {year_i}, 'tax_period_month': {month_i}, "
+                        f"'assessment_number': '{assessment_s}', 'field_name': '{field_name}', "
+                        f"'previous_value': '{previous_value}', 'upload_batch_id': '{expected_batch_id or None}'}}"
+                    )
+                    return (None, None, None)
+
+                print(
+                    "[GST_CONFLICT_RESOLVE] Ambiguous GST source rows matched same-user conflict; skipping insert. "
+                    f"keys={{'user_id': {user_id}, 'tin': '{tin_s}', 'tax_account_number': '{tax_account_s}', "
+                    f"'tax_period_year': {year_i}, 'tax_period_month': {month_i}, "
+                    f"'assessment_number': '{assessment_s}', 'field_name': '{field_name}', "
+                    f"'previous_value': '{previous_value}', 'upload_batch_id': '{expected_batch_id or None}'}} "
+                    f"matched_ids={[row.get('id') for row in matches]}"
+                )
+                return (None, None, None)
+        finally:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+    except Exception as resolve_error:
+        print(f"[GST_CONFLICT_RESOLVE] {type(resolve_error).__name__}: {resolve_error}")
+        return (None, None, None)
 
 def validate_gst_columns(df):
     """
@@ -297,10 +521,10 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
             .str.replace(".0", "", regex=False)
         )
 
-        # Invalid if non-numeric
+        # Invalid if the identifier contains characters other than letters or digits.
         non_numeric_mask = (
             df[tax_account_column].notna()
-            & ~tax_account_series.str.match(r'^\d+$')
+            & ~tax_account_series.str.match(r'^[A-Za-z0-9]+$')
         )
 
         non_numeric_tax_account_rows = df[non_numeric_mask].copy()
@@ -308,7 +532,7 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
         if not non_numeric_tax_account_rows.empty:
 
             non_numeric_tax_account_rows["reason"] = (
-                "Tax account number contains non-numeric value"
+                "Tax account number contains invalid characters"
             )
 
             removal_stats["TAX_ACCOUNT_NON_NUMERIC"] += len(
@@ -318,7 +542,7 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
             for idx, row in non_numeric_tax_account_rows.iterrows():
                 removal_details["TAX_ACCOUNT_NON_NUMERIC"].append(
                     f"Row {idx}: Tax account number "
-                    f"'{row[tax_account_column]}' is not numeric"
+                    f"'{row[tax_account_column]}' contains invalid characters"
                 )
 
             invalid_records[
@@ -662,23 +886,26 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                     if c not in df.columns:
                         df[c] = pd.NA
 
-                select_cols = db_key_cols + gst_financial_cols
+                metadata_cols = ["id", "upload_batch_id", "user_id"]
+                select_cols = db_key_cols + metadata_cols + gst_financial_cols
                 select_sql = ", ".join(select_cols)
 
                 engine = get_mysql_engine()
                 try:
                     db_frames = []
-                    # Bulk fetch by IN filters (old backend style): fetch superset, then normalize+match in pandas.
+                    # Bulk fetch by IN filters using the authenticated user's GST baseline only.
+                    current_user_id = get_authenticated_user_id()
                     tins = df["_dbk_tin"].dropna().unique().tolist()
                     tans = df["_dbk_tan"].dropna().unique().tolist()
                     years = df["tax_period_year"].dropna().unique().tolist()
                     months = df["tax_period_month"].dropna().unique().tolist()
 
-                    if tins and tans and years and months:
+                    if tins and tans and years and months and current_user_id is not None:
                         q = text(f"""
                             SELECT {select_sql}
                             FROM gst_fraud_justification
-                            WHERE tin IN :tins
+                            WHERE user_id = :current_user_id
+                              AND tin IN :tins
                               AND tax_account_number IN :tans
                               AND tax_period_year IN :years
                               AND tax_period_month IN :months
@@ -697,6 +924,7 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                         q,
                                         conn,
                                         params={
+                                            "current_user_id": int(current_user_id),
                                             "tins": tins_chunk,
                                             "tans": tans,
                                             "years": years,
@@ -704,6 +932,8 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                         },
                                     )
                                 )
+                    elif tins and tans and years and months:
+                        print("[GST_DB_VALIDATION] Authenticated user missing; skipping same-user GST baseline comparison.")
                     db_df = pd.concat(db_frames, ignore_index=True) if db_frames else pd.DataFrame()
                 finally:
                     engine.dispose()
@@ -863,9 +1093,9 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                             )
                             .reset_index()
                         )
-                        # Conflict takes precedence: if ANY matched DB row differs financially, classify as conflict.
-                        diff_ids = agg.loc[agg["_any_db_match"] & agg["_any_fin_diff"], "_upload_row_id"].tolist()
-                        dup_ids = agg.loc[agg["_any_db_match"] & ~agg["_any_fin_diff"] & agg["_any_no_fin_diff"], "_upload_row_id"].tolist()
+                        # Duplicate takes precedence: if ANY matched DB row is an exact duplicate, keep the row classified as duplicate only.
+                        dup_ids = agg.loc[agg["_any_db_match"] & agg["_any_no_fin_diff"], "_upload_row_id"].tolist()
+                        diff_ids = agg.loc[agg["_any_db_match"] & ~agg["_any_no_fin_diff"] & agg["_any_fin_diff"], "_upload_row_id"].tolist()
 
                     if dup_ids:
                         dup_rows = df[df["_upload_row_id"].isin(dup_ids)].copy()
@@ -980,7 +1210,7 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                         "tax_period_year": rr.get("tax_period_year", None),
                                         "tax_period_month": rr.get("tax_period_month", None),
                                         "assessment_number": rr.get("assessment_number", None),
-                                        "field_name": _sanitize_field_name(field_name),
+                                        "field_name": str(field_name).strip().replace("'", "").replace(" ", "_"),
                                         "previous_value": prev_val,
                                         "current_value": curr_val,
                                         "status": 0,
@@ -989,228 +1219,73 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                         "upload_batch_id": rr.get("upload_batch_id__db", None),
                                     })
 
-                            to_ins = pd.DataFrame(conflicts_rows)
-                            engine2 = get_mysql_engine()
-                            try:
-                                debug_ctx = None
+                            if conflicts_rows:
+                                to_ins = pd.DataFrame(conflicts_rows)
+                                engine2 = None
                                 try:
-                                    import os as _os
-                                    if _os.getenv("GST_DB_VALIDATION_DEBUG", "0").strip() in ("1", "true", "TRUE", "yes", "YES"):
-                                        # Build the exact requested debug items
-                                        debug_ctx = {
-                                            "fin_cols_upload_present": fin_cols_upload_present,
-                                            "fin_cols_db_present": fin_cols_db_present,
-                                            "fin_cols_compare": fin_cols_compare,
-                                            "upload_columns": list(df.columns),
-                                            "db_columns": list(db_df.columns),
-                                        }
-                                        # First matched composite key
-                                        try:
-                                            m0 = merged[matched_mask].head(1)
-                                            if len(m0) > 0:
-                                                r0 = m0.iloc[0]
-                                                debug_ctx["first_matched_key"] = {k: r0.get(k) for k in db_key_cols}
-                                        except Exception:
-                                            pass
-                                        # First mismatch key + column/value
-                                        try:
-                                            m1 = merged[merged["_has_fin_diff"]].head(1)
-                                            if len(m1) > 0:
-                                                r1 = m1.iloc[0]
-                                                debug_ctx["first_mismatch_key"] = {k: r1.get(k) for k in db_key_cols}
-                                                for c in fin_cols_compare:
-                                                    uv = float(_norm_fin_series(pd.Series([r1.get(c)])).iloc[0])
-                                                    dv = float(_norm_fin_series(pd.Series([r1.get(f"{c}__db")])).iloc[0])
-                                                    if uv != dv:
-                                                        debug_ctx["mismatch_column"] = c
-                                                        debug_ctx["upload_value"] = uv
-                                                        debug_ctx["db_value"] = dv
-                                                        break
-                                        except Exception:
-                                            pass
-                                except Exception:
-                                    debug_ctx = None
+                                    engine2 = get_mysql_engine()
+                                    with engine2.connect() as conn:
+                                        cols_res = conn.execute(text(
+                                            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'upload_conflicts' "
+                                            "ORDER BY ORDINAL_POSITION"
+                                        ))
+                                        conf_cols = [row[0] for row in cols_res]
+                                    current_user_id = get_authenticated_user_id()
+                                    for c in conf_cols:
+                                        if c not in to_ins.columns:
+                                            to_ins[c] = None
+                                    if "user_id" in conf_cols:
+                                        to_ins["user_id"] = current_user_id
 
-                                # Explicit pre-insert debug (never crash)
-                                try:
-                                    import os as _os
-                                    if _os.getenv("GST_DB_VALIDATION_DEBUG", "0").strip() in ("1", "true", "TRUE", "yes", "YES"):
-                                        try:
-                                            # Required: target table + composite key + differing column/value
-                                            key_out = None
-                                            if isinstance(debug_ctx, dict):
-                                                key_out = debug_ctx.get("first_mismatch_key") or debug_ctx.get("first_matched_key")
-                                            print("\n[GST_DB_VALIDATION_DEBUG] inserting financial-difference rows")
-                                            print("  target_table=upload_conflicts")
-                                            print(f"  key={key_out}")
-                                            if isinstance(debug_ctx, dict):
-                                                print(f"  mismatch_column={debug_ctx.get('mismatch_column')}")
-                                                print(f"  upload_value={debug_ctx.get('upload_value')}")
-                                                print(f"  db_value={debug_ctx.get('db_value')}")
-                                            try:
-                                                print("  payload_preview=")
-                                                print(to_ins[["tax_type","tin","tax_period_year","tax_period_month","field_name","previous_value","current_value","source_table"]].head(10))
-                                            except Exception:
-                                                pass
-                                        except Exception:
-                                            pass
-                                except Exception:
-                                    pass
-
-                                # Populate source_record_id + upload_batch_id by resolving the matched
-                                # gst_fraud_justification row (approval workflow integrity).
-                                try:
-                                    def _is_ignored_conflict_field(_fn: object) -> bool:
-                                        try:
-                                            _n = str(_fn or "").strip().lower().replace(" ", "")
-                                        except Exception:
-                                            return False
-                                        return _n in ("unnamed:_0", "unnamed:0", "unnamed_0")
-
-                                    def _sanitize_field_name(_fn: object):
-                                        if _fn is None:
-                                            return _fn
-                                        try:
-                                            _s = str(_fn).strip()
-                                        except Exception:
-                                            return _fn
-                                        if not _s:
-                                            return _s
-                                        _s = _s.replace("'", "")
-                                        _s = _s.replace(" ", "_")
-                                        while "__" in _s:
-                                            _s = _s.replace("__", "_")
-                                        return _s.strip("_")
-
-                                    def _resolve_source_meta_for_conflict_row(_row: dict):
-                                        try:
-                                            fn = _sanitize_field_name("" if _row.get("field_name") is None else str(_row.get("field_name")).strip())
-                                            if not fn or _is_ignored_conflict_field(fn):
-                                                return (None, None, None)
-
-                                            tin_s = "" if _row.get("tin") is None else str(_row.get("tin")).strip()
-                                            if tin_s.endswith(".0") and tin_s[:-2].isdigit():
-                                                tin_s = tin_s[:-2]
-                                            try:
-                                                yr_i = int(float(_row.get("tax_period_year"))) if _row.get("tax_period_year") is not None else None
-                                            except Exception:
-                                                yr_i = None
-                                            try:
-                                                mo_i = int(float(_row.get("tax_period_month"))) if _row.get("tax_period_month") is not None else None
-                                            except Exception:
-                                                mo_i = None
-                                            assess_s = "" if _row.get("assessment_number") is None else str(_row.get("assessment_number")).strip()
-                                            if assess_s.endswith(".0") and assess_s[:-2].isdigit():
-                                                assess_s = assess_s[:-2]
-                                            try:
-                                                prev_f = float(_row.get("previous_value")) if _row.get("previous_value") is not None else None
-                                            except Exception:
+                                    try:
+                                        if "source_record_id" in conf_cols or "upload_batch_id" in conf_cols:
+                                            src_ids = []
+                                            batch_ids = []
+                                            tp_names = []
+                                            for _, r in to_ins.iterrows():
+                                                src_id, batch_id, tp_name = _resolve_source_meta_for_conflict_row(r.to_dict())
+                                                src_ids.append(src_id)
+                                                batch_ids.append(batch_id)
                                                 try:
-                                                    prev_f = float(str(_row.get("previous_value")).strip())
+                                                    resolved = tp_name
+                                                    if resolved is None or (isinstance(resolved, str) and resolved.strip() == ""):
+                                                        resolved = r.get("taxpayer_name")
+                                                    tp_names.append(resolved)
                                                 except Exception:
-                                                    prev_f = None
-
-                                            from sqlalchemy import text as _text
-                                            with engine2.connect() as _conn:
-                                                cols_res = _conn.execute(
-                                                    _text(
-                                                        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-                                                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
-                                                    ),
-                                                    {"t": "gst_fraud_justification"},
-                                                )
-                                                cols = set((r[0] or "").lower() for r in cols_res.fetchall())
-                                                if fn.lower() not in cols:
-                                                    return (None, None, None)
-
-                                                sel_cols = ["id"]
-                                                has_batch = "upload_batch_id" in cols
-                                                if has_batch:
-                                                    sel_cols.append("upload_batch_id")
-                                                # Resolve taxpayer name (GST/SWT use taxpayer_name; CIT uses taxpayer)
-                                                has_name = ("taxpayer_name" in cols) or ("taxpayer" in cols)
-                                                if "taxpayer_name" in cols:
-                                                    sel_cols.append("taxpayer_name")
-                                                elif "taxpayer" in cols:
-                                                    sel_cols.append("taxpayer")
-                                                # Select dynamic field value for python-side comparison (do not compare in SQL).
-                                                sel_cols.append(f"`{fn}` AS _db_val")
-
-                                                fn_q = f"`{fn}`"
-                                                q = _text(
-                                                    f"SELECT {', '.join(sel_cols)} FROM `gst_fraud_justification` "
-                                                    f"WHERE tin = :tin AND tax_period_year = :yr AND tax_period_month = :mo "
-                                                    f"AND assessment_number = :assess "
-                                                    f"ORDER BY id DESC LIMIT 5"
-                                                )
-                                                rows = _conn.execute(
-                                                    q,
-                                                    {"tin": tin_s, "yr": yr_i, "mo": mo_i, "assess": assess_s},
-                                                ).fetchall()
-                                                if not rows:
-                                                    return (None, None, None)
-                                                def _normalize(v):
-                                                    try:
-                                                        if v is None or (isinstance(v, str) and v.strip() == ""):
-                                                            v = 0
-                                                        return round(float(v), 2)
-                                                    except Exception:
-                                                        try:
-                                                            return str(v).strip()
-                                                        except Exception:
-                                                            return ""
-                                                want = _normalize(prev_f)
-                                                has_batch = "upload_batch_id" in cols
-                                                for row in rows:
-                                                    try:
-                                                        db_val = row[-1] if len(row) >= 2 else None
-                                                        if _normalize(db_val) == want:
-                                                            src_id = row[0] if len(row) > 0 else None
-                                                            batch_id = row[1] if (has_batch and len(row) >= 3) else None
-                                                            tp_name = None
-                                                            if has_name:
-                                                                try:
-                                                                    tp_name = row[-2]
-                                                                except Exception:
-                                                                    tp_name = None
-                                                            return (src_id, batch_id, tp_name)
-                                                    except Exception:
-                                                        continue
-                                                return (None, None, None)
-                                        except Exception:
-                                            return (None, None, None)
-
-                                    if "source_record_id" in to_ins.columns or "upload_batch_id" in to_ins.columns:
-                                        src_ids = []
-                                        batch_ids = []
-                                        tp_names = []
-                                        for _ in to_ins.to_dict(orient="records"):
-                                            sid, bid, tpn = _resolve_source_meta_for_conflict_row(_)
-                                            src_ids.append(sid)
-                                            batch_ids.append(bid)
-                                            tp_names.append(tpn)
-                                        if "source_record_id" in to_ins.columns:
-                                            to_ins["source_record_id"] = src_ids
-                                        if "upload_batch_id" in to_ins.columns:
-                                            to_ins["upload_batch_id"] = batch_ids
-                                        if "taxpayer_name" in to_ins.columns:
-                                            # Prefer resolved name, otherwise keep existing value.
-                                            try:
-                                                existing = to_ins.get("taxpayer_name")
-                                                to_ins["taxpayer_name"] = [
-                                                    (tp_names[i] if tp_names[i] not in (None, "") else (existing.iloc[i] if existing is not None else None))
-                                                    for i in range(len(tp_names))
-                                                ]
-                                            except Exception:
+                                                    tp_names.append(None)
+                                            if "source_record_id" in conf_cols:
+                                                to_ins["source_record_id"] = src_ids
+                                            if "upload_batch_id" in conf_cols:
+                                                to_ins["upload_batch_id"] = batch_ids
+                                            if "taxpayer_name" in conf_cols:
                                                 to_ins["taxpayer_name"] = tp_names
-                                except Exception:
-                                    pass
+                                    except Exception as resolve_error:
+                                        print(f"[GST_CONFLICT_INSERT_ERROR] {type(resolve_error).__name__}: {resolve_error}")
 
-                                _align_and_append_df(engine2, "upload_conflicts", to_ins, debug_ctx=debug_ctx)
-                            finally:
-                                engine2.dispose()
-                        except Exception:
-                            pass
+                                    if "source_record_id" in to_ins.columns:
+                                        source_ids = to_ins["source_record_id"].astype(str).str.strip()
+                                        unresolved_mask = to_ins["source_record_id"].isna() | source_ids.isin(["", "None", "nan"])
+                                        if unresolved_mask.any():
+                                            unresolved_rows = to_ins.loc[unresolved_mask, [c for c in ["tin", "tax_period_year", "tax_period_month", "assessment_number", "field_name", "previous_value"] if c in to_ins.columns]]
+                                            print(
+                                                f"[GST_CONFLICT_INSERT_ERROR] Skipping {int(unresolved_mask.sum())} unresolved GST financial-difference conflict row(s): "
+                                                f"{unresolved_rows.to_dict(orient='records')}"
+                                            )
+                                            to_ins = to_ins.loc[~unresolved_mask].copy()
+
+                                    if not to_ins.empty:
+                                        to_ins = to_ins[conf_cols]
+                                        with engine2.begin() as conn:
+                                            to_ins.to_sql("upload_conflicts", con=conn, if_exists="append", index=False)
+                                finally:
+                                    try:
+                                        if engine2 is not None:
+                                            engine2.dispose()
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            print(f"[GST_CONFLICT_INSERT_ERROR] {type(e).__name__}: {e}")
 
                         df = df[~df["_upload_row_id"].isin(diff_ids)]
 
@@ -1290,7 +1365,8 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
     #   TIN: 1234567890 -> invalid
     #   tax_account_number: 123456 -> valid
     #   tax_account_number: 123.0 -> normalize to 123
-    #   tax_account_number: ABC123 -> invalid
+    #   tax_account_number: AA029 -> valid
+    #   tax_account_number: ABC-123 -> invalid
     cleaned_data_df = _normalize_identifier_columns(cleaned_data_df)
 
     if not removed_data_df.empty:

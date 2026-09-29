@@ -45,6 +45,40 @@ const monthLabel = (year, month) => {
   return dayjs(`${year}-${String(month).padStart(2, "0")}-01`).format("YYYY MMMM");
 };
 
+const formatFlagged = (flagged) => {
+  if (flagged === 1 || flagged === "1") return "Yes";
+  if (flagged === 0 || flagged === "0") return "No";
+  return flagged ?? "-";
+};
+
+const isPredictedFraud = (record) =>
+  String(record?.predicted_fraud ?? "").trim().toLowerCase() === "fraud";
+
+const aggregateGstRecordsByTin = (records) => {
+  const recordsByTin = new Map();
+
+  records.forEach((record) => {
+    const tinKey = String(record?.tin || record?.tin_number || "");
+    const existing = recordsByTin.get(tinKey);
+
+    if (!existing) {
+      recordsByTin.set(tinKey, { ...record });
+      return;
+    }
+
+    if (isPredictedFraud(record)) {
+      recordsByTin.set(tinKey, {
+        ...existing,
+        predicted_fraud: record.predicted_fraud,
+        fraud_reason: isPredictedFraud(existing)
+          ? (record.fraud_reason || existing.fraud_reason)
+          : (record.fraud_reason || ""),
+      });
+    }
+  });
+
+  return Array.from(recordsByTin.values());
+};
 
 export default function TaxpayerProfile() {
   const [collapsed, setCollapsed] = useState(false);
@@ -86,18 +120,19 @@ export default function TaxpayerProfile() {
     setStartDate,
     setEndDate,
   } = useTenure("3m");
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ taxType: "gst", tenure: "3m", startDate: dayjs().subtract(2, "month").startOf("month"), endDate: dayjs() }));
 
   const BASE_PATH = "/predicted-records/all-tax-records";
   const HISTORY_PATH = "/predicted-records/taxpayer-history";
   const FRAUD_REASONS_PATH = "/predicted-records/fraud-reasons";
 
   const getFilterParams = () => ({
-    taxtype: taxType,
-    range_type: tenure,
-    ...(tenure === "custom" && isValidDayjs(startDate) && isValidDayjs(endDate)
+    taxtype: appliedFilters.taxType,
+    range_type: appliedFilters.tenure,
+    ...(appliedFilters.tenure === "custom" && isValidDayjs(appliedFilters.startDate) && isValidDayjs(appliedFilters.endDate)
       ? {
-          start_date: dayjs(startDate).format("YYYY-MM-DD"),
-          end_date: dayjs(endDate).format("YYYY-MM-DD"),
+          start_date: dayjs(appliedFilters.startDate).format("YYYY-MM-DD"),
+          end_date: dayjs(appliedFilters.endDate).format("YYYY-MM-DD"),
         }
       : {}),
   });
@@ -118,7 +153,7 @@ export default function TaxpayerProfile() {
   };
 
   const fetchCoreData = async () => {
-    if (tenure === "custom" && (!isValidDayjs(startDate) || !isValidDayjs(endDate))) {
+    if (appliedFilters.tenure === "custom" && (!isValidDayjs(appliedFilters.startDate) || !isValidDayjs(appliedFilters.endDate))) {
       setRiskRecords([]);
       setTotalRecords(0);
       setTotalPages(0);
@@ -241,11 +276,11 @@ export default function TaxpayerProfile() {
     setFraudReasons([]);
     setFraudReasonTin("");
     setOpenReasonDialog(false);
-  }, [taxType, tenure, startDate, endDate]);
+  }, [appliedFilters]);
 
   useEffect(() => {
     fetchCoreData();
-  }, [taxType, tenure, startDate, endDate, currentPage, searchTerm, sortBy, sortOrder]);
+  }, [appliedFilters, currentPage, searchTerm, sortBy, sortOrder]);
 
   const columns = [
     {
@@ -253,6 +288,8 @@ export default function TaxpayerProfile() {
       selector: (row) => row.tin || row.tin_number || "-",
       sortable: true,
       sortField: "tin",
+      minWidth: "110px",
+      grow: 0.8,
     },
     {
       name: "Taxpayer Name",
@@ -260,23 +297,15 @@ export default function TaxpayerProfile() {
       sortable: true,
       sortField: "taxpayer_name",
       wrap: true,
-    },
-    {
-      name: "Year",
-      selector: (row) => row.tax_period_year || "-",
-      sortable: true,
-      sortField: "tax_period_year",
-    },
-    {
-      name: "Month",
-      selector: (row) => row.tax_period_month ?? "-",
-      sortable: true,
-      sortField: "tax_period_month",
+      minWidth: "250px",
+      grow: 2.5,
     },
     {
       name: "Is Fraud",
       cell: (row) => {
-        const isFraud = Number(row?.is_fraud) === 1;
+        const isFraud = taxType === "gst"
+          ? isPredictedFraud(row)
+          : Number(row?.is_fraud) === 1;
         return (
           <span style={{ fontWeight: 700, color: isFraud ? "#dc2626" : "#16a34a" }}>
             {isFraud ? "YES" : "NO"}
@@ -285,18 +314,26 @@ export default function TaxpayerProfile() {
       },
       sortable: true,
       sortField: "is_fraud",
+      minWidth: "110px",
+      grow: 1,
     },
     {
       name: "Risk Type",
       selector: (row) => row.risk_type || "-",
       sortable: true,
       sortField: "risk_type",
+      minWidth: "120px",
+      grow: 1,
     },
     {
       name: "Flagged",
-      selector: (row) => row.flagged ?? "-",
+      selector: (row) => taxType === "gst"
+        ? formatFlagged(isPredictedFraud(row) ? 1 : 0)
+        : formatFlagged(row.flagged),
       sortable: true,
       sortField: "flagged",
+      minWidth: "100px",
+      grow: 0.9,
     },
     {
       name: "View",
@@ -305,11 +342,16 @@ export default function TaxpayerProfile() {
           <RemoveRedEyeIcon fontSize="small" />
         </Button>
       ),
+      minWidth: "75px",
+      grow: 0.6,
     },
     {
       name: "Fraud Reason",
-      cell: (row) =>
-        row.fraud_reason ? (
+      cell: (row) => {
+        const hasFraudReason = (taxType === "gst" || taxType === "swt")
+          ? (taxType === "gst" ? isPredictedFraud(row) : Number(row?.is_fraud) === 1)
+          : row.fraud_reason;
+        return hasFraudReason ? (
           <Button
             className="badge bg-danger"
             style={{ color: "#fff", fontSize: "12px" }}
@@ -319,8 +361,11 @@ export default function TaxpayerProfile() {
           </Button>
         ) : (
           "-"
-        ),
+        );
+      },
       button: true,
+      minWidth: "140px",
+      grow: 1.2,
     },
   ];
 
@@ -347,6 +392,10 @@ export default function TaxpayerProfile() {
         rows: [...rows].sort((a, b) => Number(b.tax_period_month ?? -1) - Number(a.tax_period_month ?? -1)),
       }));
   }, [selectedTaxpayer]);
+
+  const tableRecords = taxType === "gst"
+    ? aggregateGstRecordsByTin(riskRecords)
+    : riskRecords;
 
   return (
     <div className="container-fluid">
@@ -456,6 +505,7 @@ export default function TaxpayerProfile() {
                       <span>{formatDateForDisplay(endDate)}</span>
                     </div>
                   )}
+                  <Button size="small" variant="contained" disabled={loading || (tenure === "custom" && (!isValidDayjs(startDate) || !isValidDayjs(endDate)))} onClick={() => { setCurrentPage(1); setAppliedFilters({ taxType, tenure, startDate, endDate }); }}>Submit</Button>
                 </div>
               </div>
 
@@ -472,13 +522,17 @@ export default function TaxpayerProfile() {
 
                   <DataTable
                     columns={columns}
-                    data={riskRecords}
+                    data={tableRecords}
                     keyField="row_key"
                     highlightOnHover
                     dense
                     fixedHeader
                     fixedHeaderScrollHeight="420px"
-                    customStyles={tableCustomStyles}
+                    customStyles={{
+                      ...tableCustomStyles,
+                      table: { style: { width: "100%" } },
+                    }}
+                    responsive
                     noDataComponent={<div className="no-data-message">No records</div>}
                     progressPending={loading}
                     progressComponent={
@@ -655,7 +709,7 @@ export default function TaxpayerProfile() {
                                     <th>Month</th>
                                     <th>Income</th>
                                     <th>Tax</th>
-                                    <th>Segment</th>
+                                    <th>Taxpayer Type</th>
                                     <th>Flag</th>
                                   </tr>
                                 </thead>
@@ -667,7 +721,7 @@ export default function TaxpayerProfile() {
                                       <td>{row.total_sales_income ?? "-"}</td>
                                       <td>{row.gst_payable ?? "-"}</td>
                                       <td>{row.segment_label || "-"}</td>
-                                      <td>{row.flagged ?? "-"}</td>
+                                      <td>{taxType === "gst" ? (isPredictedFraud(row) ? "Yes" : "No") : (row.flagged ?? "-")}</td>
                                     </tr>
                                   ))}
                                 </tbody>

@@ -717,6 +717,35 @@ def _ensure_roles_table_supports_custom_names(conn):
         conn.execute(text("ALTER TABLE roles MODIFY COLUMN name VARCHAR(100) NOT NULL"))
 
 
+def _ensure_tin_registration_mst_columns(conn):
+    table_exists = conn.execute(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'tin_registration_mst'
+            """
+        )
+    ).scalar()
+    if table_exists:
+        has_status = conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'tin_registration_mst'
+                  AND COLUMN_NAME = 'status'
+                """
+            )
+        ).scalar()
+        if not has_status:
+            conn.execute(text("ALTER TABLE tin_registration_mst ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE'"))
+            conn.execute(text("UPDATE tin_registration_mst SET status = 'ACTIVE' WHERE status IS NULL"))
+
+
+
 def _seed_permissions(conn):
     permission_ids = {}
     for item in PERMISSION_SEED:
@@ -817,6 +846,7 @@ def init_db():
                 print(f"  [DB Init] {table_name}")
 
             _ensure_roles_table_supports_custom_names(conn)
+            _ensure_tin_registration_mst_columns(conn)
             permission_ids = _seed_permissions(conn)
             _seed_role_permissions(conn, permission_ids)
             conn.commit()
