@@ -120,7 +120,6 @@ def _build_conflict_rows(tax_type, status_raw=None, submit_raw=None):
                 "change_json": r.change_json,
                 "status": STATUS_MAP.get(int(getattr(r, "status", 0)), "Pending"),
                 "is_submit": int(getattr(r, "is_submit", 0) or 0),
-                "created_at": r.created_at.isoformat() if r.created_at else None,
                 "uploaded_by": uploader.full_name if uploader and uploader.full_name else (uploader.email if uploader else upload.uploaded_by if upload else None),
                 "file_upload_history_id": r.file_upload_history_id,
                 "upload_path": getattr(upload, "upload_path", None) if upload else None,
