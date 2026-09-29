@@ -2182,6 +2182,7 @@ def _run_cit_validation(output_dir_override=None):
                                                         "ORDER BY ORDINAL_POSITION"
                                                     ))
                                                     conf_cols = [row[0] for row in cols_res]
+                                                current_user_id = get_authenticated_user_id()
                                                 now_ts = datetime.now()
                                                 for c in conf_cols:
                                                     if c not in to_ins.columns:

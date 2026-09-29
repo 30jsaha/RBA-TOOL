@@ -1238,6 +1238,7 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                             "ORDER BY ORDINAL_POSITION"
                                         ))
                                         conf_cols = [row[0] for row in cols_res]
+                                    current_user_id = get_authenticated_user_id()
                                     now_ts = datetime.now()
                                     for c in conf_cols:
                                         if c not in to_ins.columns:

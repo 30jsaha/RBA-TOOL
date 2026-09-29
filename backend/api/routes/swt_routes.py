@@ -1569,6 +1569,7 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                                                         "ORDER BY ORDINAL_POSITION"
                                                     ))
                                                     conf_cols = [row[0] for row in cols_res]
+                                                current_user_id = get_authenticated_user_id()
                                                 now_ts = datetime.now()
                                                 for c in conf_cols:
                                                     if c not in to_ins.columns:
