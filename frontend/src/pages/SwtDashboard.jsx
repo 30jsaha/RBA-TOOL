@@ -23,6 +23,7 @@ import {
   Box
 } from "@mui/material";
 import dayjs from "dayjs";
+import { formatKinaAxisValue } from "../utils/apexChartFormatters";
 import "./css/Dashboard.css";
 import tableCustomStyles from "../components/common/tableStyles";
 import EmptyState from "../components/common/EmptyState";
@@ -165,20 +166,6 @@ export default function SwtDashboard() {
 
   const normalize = useCallback((s) =>
     (s || "").trim().toLowerCase().replace(/[^a-z]/g, ""), []);
-
-  const formatLargeNumber = useCallback((value) => {
-    const numericValue = Number(value ?? 0);
-    if (Math.abs(numericValue) >= 1000000000) {
-      return `${(numericValue / 1000000000).toFixed(1)}B`;
-    }
-    if (Math.abs(numericValue) >= 1000000) {
-      return `${(numericValue / 1000000).toFixed(1)}M`;
-    }
-    if (Math.abs(numericValue) >= 1000) {
-      return `${(numericValue / 1000).toFixed(1)}K`;
-    }
-    return numericValue.toLocaleString();
-  }, []);
 
   const formatCurrency = useCallback((value) => `K ${Number(value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, []);
 
@@ -708,7 +695,7 @@ export default function SwtDashboard() {
   },
   yaxis: {
     labels: {
-      formatter: (value) => formatLargeNumber(value),
+      formatter: formatKinaAxisValue,
     },
   },
   noData: {
@@ -716,7 +703,7 @@ export default function SwtDashboard() {
     align: "center",
     verticalAlign: "middle",
   },
-}), [formatLargeNumber, swtSalaryChart.categories]);
+}), [swtSalaryChart.categories]);
 
 
   // Fraud Chart (BAR CLEARER THAN HEATMAP)
@@ -1056,7 +1043,7 @@ export default function SwtDashboard() {
                   {/* Segmentation - Matches Dashboard.jsx styling */}
                   <div className="col-lg-6 mb-4">
                     <ChartDataCard title="Segmentation Distribution" isChartView={chartView[VIEW_KEYS.segmentation]} onToggleView={() => toggleChartView(VIEW_KEYS.segmentation)} onDownloadCsv={downloadSegmentationCsv} loading={sectionLoading.segmentation} hasData={hasSegmentationData} chartSkeleton={chartSkeleton(350)} tableSkeleton={<TableSkeleton columnCount={2} />} emptyMessage="No records available for the selected criteria"
-                      chartContent={<Chart options={segmentationOptions} series={[{ data: segmentation.series }]} type="bar" height={350} />}
+                      chartContent={<Chart options={segmentationOptions} series={[{ name: "Number of taxpayers", data: segmentation.series }]} type="bar" height={350} />}
                       tableContent={<DataTable columns={segmentationTableColumns} data={segmentationTableData} customStyles={tableCustomStyles} dense pagination paginationPerPage={10} highlightOnHover responsive persistTableHead />}
                     />
                   </div>

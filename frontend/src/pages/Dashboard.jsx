@@ -29,6 +29,7 @@ import EmptyState from "../components/common/EmptyState";
 import TableSkeleton from "../components/common/TableSkeleton";
 import ChartDataCard from "../components/common/ChartDataCard";
 import API from "../api/api";
+import { formatKinaAxisValue } from "../utils/apexChartFormatters";
 import "./css/Dashboard.css";
 
 const PNGMapGST = lazy(() => import("../components/maps/PNGMapGST"));
@@ -474,7 +475,7 @@ export default function Dashboard() {
     },
     yaxis: {
       labels: {
-        formatter: (value) => formatCurrency(value),
+        formatter: formatKinaAxisValue,
       },
     },
     tooltip: {
@@ -1059,7 +1060,7 @@ export default function Dashboard() {
                                 },
                                 yaxis: {
                                   labels: {
-                                    formatter: (value) => formatCurrency(value),
+                                    formatter: formatKinaAxisValue,
                                   },
                                 },
                               }}
@@ -1103,7 +1104,7 @@ export default function Dashboard() {
                       chartContent={
                         <Chart
                           options={segmentationOptions}
-                          series={[{ data: segmentation.series }]}
+                          series={[{ name: "Number of taxpayers", data: segmentation.series }]}
                           type="bar"
                           height={350}
                         />

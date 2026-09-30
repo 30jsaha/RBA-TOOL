@@ -4,6 +4,7 @@ import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
 import DataTable from "react-data-table-component";
+import { formatKinaAxisValue } from "../utils/apexChartFormatters";
 import {
   MenuItem,
   Select,
@@ -303,6 +304,7 @@ const getParams = () => {
       },
     },
     xaxis: { categories: ["Payable", "Refundable"], title: { text: "Industry" } },
+    yaxis: { labels: { formatter: formatKinaAxisValue } },
     title: { text: `Selected Industry: ${selectedIndustry}`, style: { fontWeight: "bold" } },
     colors: ["#16A085", "#E67E22"],
     legend: { position: "top" },
@@ -330,6 +332,7 @@ const getParams = () => {
       },
     },
     xaxis: { categories: ["Input Credits", "Output Debits"], title: { text: "Industry" } },
+    yaxis: { labels: { formatter: formatKinaAxisValue } },
     title: { text: `Selected Industry: ${selectedIndustry}`, style: { fontWeight: "bold" } },
     colors: ["#2980B9", "#C0392B"],
     legend: { position: "top" },

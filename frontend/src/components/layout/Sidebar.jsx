@@ -227,7 +227,7 @@ export default function Sidebar() {
 
         {canAccess("upload_tin_registration") && (
           <Link to="/upload-tin-registration" className={`nav-link text-white ${location.pathname === "/upload-tin-registration" ? "active" : ""}`}>
-            <Upload className="me-2" color="#347ae2" /> <span className="label">Upload TIN Registration</span>
+            <Upload className="me-2" color="#347ae2" /> <span className="label">TIN Master</span>
           </Link>
         )}
 

@@ -6,6 +6,7 @@ import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
+import { formatKinaAxisValue } from "../utils/apexChartFormatters";
 import DataTable from "react-data-table-component";
 import {
   MenuItem,
@@ -640,6 +641,7 @@ export default function CommonDashboard() {
     chart: { type: "line", height: 350 },
     stroke: { curve: "smooth", width: 3 },
     xaxis: { categories: taxFlowCategories ?? [] },
+    yaxis: { labels: { formatter: formatKinaAxisValue } },
     tooltip: { shared: true, intersect: false },
     colors: ["#1E88E5", "#2ECC71", "#F39C12"],
   }), [taxFlowCategories]);
@@ -660,14 +662,7 @@ export default function CommonDashboard() {
         (s.sector || "Unknown").slice(0, 30)
       ),
       labels: {
-        formatter: (val) => {
-          if (val >= 1_000_000_000)
-            return "K " + (val / 1_000_000_000).toFixed(1) + "B";
-          if (val >= 1_000_000)
-            return "K " + (val / 1_000_000).toFixed(1) + "M";
-          return "K " + val.toLocaleString();
-        },
-
+        formatter: formatKinaAxisValue,
       },
     },
     tooltip: {
