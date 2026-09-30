@@ -1,561 +1,177 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import { BookOpen, CheckCircle2, ChevronDown, Download, FileText, Lightbulb, Search, ShieldCheck, X } from "lucide-react";
 import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
-import { Button } from "@mui/material";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import "./css/HelpCenter.css";
 
+const MANUAL_DATE = "30 September 2026";
+const MANUAL_VERSION = "Version 1.0";
+
+const helpSections = [
+  { id: "introduction", title: "Introduction", summary: "A practical guide to using the RBA Tool for tax data review and risk-based analysis.", keywords: "RBA Tool user manual tax fraud detection GST SWT CIT", items: [
+    { title: "What the RBA Tool does", paragraphs: ["The RBA Tool is a protected web application for uploading tax records, validating files, processing GST, SWT and CIT data, and reviewing risk, fraud and compliance information.", "The interface combines dashboards, upload workflows, searchable tables, reports and administration screens. What a user sees depends on the permissions assigned to the signed-in account."], bullets: ["GST - Goods and Services Tax", "SWT - Salary and Wages Tax", "CIT - Company Income Tax", "TIN - Tax Identification Number"], note: { tone: "info", text: "Use this manual as a navigation and workflow reference. Values shown in the application remain the source of truth." } },
+    { title: "How to use this manual", paragraphs: ["Use the search box to find a topic such as upload, CSV, risk or taxpayer. Open a major section and then its topic cards for the detailed instructions."], steps: ["Search for a keyword or select a section from the table of contents.", "Expand the relevant topic and follow its numbered workflow.", "Use the application navigation to perform the action described."] },
+  ] },
+  { id: "overview", title: "System Overview", summary: "The application is organized around data intake, processing, review and reporting.", keywords: "workflow overview processing validation segmentation reports dashboard", items: [
+    { title: "Common application workflow", steps: ["Sign in with an active account.", "Open the module allowed for your role.", "Upload or select the relevant tax data and assessment dates.", "Validate the data and resolve invalid records when the screen reports them.", "Process validated data and monitor the progress/status shown by the application.", "Review dashboards, risk/compliance views and reports.", "Export available results when an export control is provided."] },
+    { title: "Key concepts", bullets: ["Validation checks the selected file before processing can start.", "Processing runs the tax-specific pipeline and reports progress, completion or failure.", "Segmentation groups taxpayers into segments for review and is started from Upload Sheets after historical-data validation.", "Risk and fraud indicators are presented as application results for investigation; they are not a substitute for an official review decision.", "Upload history records file metadata and the user/role associated with the upload."] },
+  ] },
+  { id: "roles", title: "User Roles & Access", summary: "Navigation and route access are permission-driven.", keywords: "roles permissions ADMIN AUDITOR TAXPAYER access restricted authorization", items: [
+    { title: "How access works", paragraphs: ["The signed-in user carries roles and permissions. Sidebar groups and protected routes are shown only when the corresponding permission is present. The Help Centre itself requires authentication but does not require a separate feature permission."], table: { columns: ["Area", "Permission used by the application"], rows: [["Dashboard", "dashboard.dashboard, dashboard.gst, dashboard.swt, dashboard.cit"], ["Upload Sheets", "upload_sheets"], ["Analytics", "analytics.risk_assessment, analytics.compliance"], ["Reports", "reports.recent_uploads, reports.taxpayer_profile, reports.risk_profiling"], ["Upload History / TIN Master", "upload_history / upload_tin_registration"], ["Settings", "settings.* permissions"], ["Data Change Approval", "ADMIN or SUPERVISOR role"]] }, note: { tone: "warning", text: "A missing menu item normally means the current account does not have the required permission. Ask an administrator to review access rather than changing URLs manually." } },
+    { title: "Role-oriented workflows", bullets: ["Administrators can work with user, role, permission, invalid-TIN and system administration screens when those permissions are assigned.", "Auditors and other operational users can use the modules granted to their account to review uploads, risk results, compliance data and reports.", "Taxpayer-facing access is limited to the routes and permissions assigned to that account; the application does not grant universal access to all taxpayers or modules.", "The source code enforces permissions at route and navigation level, so the exact menu varies by account."] },
+  ] },
+  { id: "login", title: "Login & Authentication", summary: "Start every session from the login page with an authenticated account.", keywords: "login authentication email password session token logout", items: [
+    { title: "Sign in", steps: ["Open the application login page.", "Enter the account email and password.", "Submit the form.", "After authentication, the application restores the session and opens the permitted application area."], bullets: ["Protected routes redirect unauthenticated users to login.", "A failed login is shown as an inline error on the login page.", "Session restoration and token handling are managed by the existing authentication service."] },
+    { title: "Authentication restrictions", paragraphs: ["The application does not expose a public Help Centre route. Users must be authenticated, and protected pages still check the user's permissions or required roles."], note: { tone: "warning", text: "If a page is inaccessible after login, check the assigned role/permission with the system administrator." } },
+  ] },
+  { id: "navigation", title: "Navigation / Sidebar", summary: "Use the left sidebar to move between dashboards, uploads, analytics, reports, history, TIN Master, Help Centre and Settings.", keywords: "navigation sidebar menu dashboard analytics reports settings help", items: [
+    { title: "Available navigation groups", table: { columns: ["Group", "Screens confirmed in the application"], rows: [["Dashboard", "Common Dashboard, GST, SWT, CIT"], ["Upload", "Upload Sheets, TIN Master"], ["Analytics", "Risk Assessment, Compliance"], ["Reports", "Recent Uploads, Taxpayer Profile, Risk Profiling"], ["History", "Upload History"], ["Settings", "Users, Roles, Permissions, Invalid TINs, Conflicts and Reset DB (permission-dependent)"], ["Support", "Help Centre"]] } },
+    { title: "Navigation behavior", bullets: ["Dashboard, Analytics, Reports and Settings are expandable groups.", "The sidebar highlights the active route and automatically opens the matching group.", "The sidebar can be collapsed; its behavior is shared application chrome and remains unchanged by this manual.", "Items that the current user cannot access are not displayed."] },
+  ] },
+  { id: "dashboard", title: "Dashboard", summary: "Use dashboards to review summarized tax, risk, fraud, segmentation and geographic results.", keywords: "dashboard common GST SWT CIT charts tables filters dates province CSV PDF segmentation risk fraud", items: [
+    { title: "Common Dashboard", paragraphs: ["The Common Dashboard provides summary cards, sales/payable views, segmentation distribution and risk-flagged distribution. Chart cards can switch between chart and table views where the control is available."], bullets: ["Date range filters use From and To dates.", "Segmentation and risk results can be viewed as charts or tables.", "Province-based fraud distribution is shown with a map/details view when data is available.", "Dashboard PDF and CSV controls are implemented for the relevant views."] },
+    { title: "GST, SWT and CIT dashboards", paragraphs: ["Each tax dashboard loads tax-specific metrics and visualizations. The source confirms date filtering, charts, tables and exports, with details varying by tax type."], bullets: ["GST: sales/payable summaries, segmentation, risk distribution and fraud-by-province views.", "SWT: salary versus SWT, monthly fraud/red-flag cases, segmentation, latest records and province distribution.", "CIT: tax-specific segmentation/risk and financial dashboard views with CSV downloads.", "Dashboard data can be empty for a selected range; the application then shows an empty state rather than inventing records."], note: { tone: "tip", text: "When a chart has a table toggle, use the table view for sortable, readable values and the CSV control for an exportable copy." } },
+  ] },
+  { id: "gst", title: "GST Module", summary: "Upload, validate, process and review GST records through the GST route and related reports.", keywords: "GST upload validate process fraud risk sales payable segmentation province CSV", items: [
+    { title: "GST workflow", steps: ["Choose GST in Upload Sheets and provide the required assessment dates when prompted.", "Select a supported source file and optionally preview the first rows.", "Run Upload & Validate and review the validation result.", "Correct or download invalid records when the result provides an invalid-data file.", "Use Process only after validation succeeds, then monitor the run status.", "Review GST dashboard charts/tables, risk indicators, segmentation and available exports."] },
+    { title: "GST review outputs", bullets: ["Sales and GST payable/related summary cards.", "Segmentation distribution and risk/fraud distribution.", "Fraud TIN distribution by province when geographic data is available.", "PDF dashboard export and CSV exports for implemented dashboard datasets."] },
+  ] },
+  { id: "swt", title: "SWT Module", summary: "Work with salary and wages tax data, monthly fraud cases, segmentation and latest records.", keywords: "SWT salary wages upload validate process fraud monthly segmentation latest records province search", items: [
+    { title: "SWT workflow", steps: ["Select SWT in Upload Sheets.", "Set the assessment date range, choose the file and preview it if required.", "Upload and validate the file.", "Resolve invalid records if reported, then process the validated file.", "Monitor the run status and review the SWT dashboard after completion."] },
+    { title: "SWT review outputs", bullets: ["Salary-versus-SWT summary and monthly fraud/red-flag chart.", "Segmentation chart/table and fraud TIN distribution by province.", "Latest SWT records with TIN/taxpayer search.", "CSV/PDF export controls where rendered by the dashboard, plus table CSV export for latest records."] },
+  ] },
+  { id: "cit", title: "CIT Module", summary: "Process company income tax records and review CIT-specific risk, segmentation and financial results.", keywords: "CIT company income tax upload validate process risk segmentation profit CSV", items: [
+    { title: "CIT workflow", steps: ["Select CIT in Upload Sheets.", "Provide the assessment dates and choose a supported file.", "Preview, upload and validate the file.", "Correct invalid data if required and process only after validation succeeds.", "Review the CIT dashboard and report views after processing completes."] },
+    { title: "CIT review outputs", bullets: ["Segmentation and risk distribution views.", "Financial measures and taxpayer/company details exposed by the dashboard implementation.", "CIT CSV downloads for implemented dashboard datasets.", "Date filters apply to the dashboard requests and can return an empty state when no rows match."] },
+  ] },
+  { id: "upload", title: "Upload Sheets", summary: "The Upload Sheets page is the controlled entry point for GST, SWT and CIT source data.", keywords: "upload sheets file CSV parquet preview validate invalid process progress date tax parameter create segmentation start segmentation", items: [
+    { title: "Prepare a file", bullets: ["Select the tax parameter before uploading.", "The page accepts CSV and Parquet files for tax uploads.", "Use the available sample-file links to understand the expected data shape.", "Provide both From and To dates when the workflow requires a date range; the end date must be on or after the start date."] },
+    { title: "Upload and validate", steps: ["Choose or drop the file in the upload area.", "Use Show Preview to inspect the parsed rows when available.", "Click Upload & Validate.", "Wait while the page reports upload/CSV-reading/validation progress.", "Review the validation summary and any invalid-record download.", "Continue to Process only when the validation response is valid."] },
+    { title: "Process and monitor", paragraphs: ["Processing starts a tax-specific run and returns a run identifier. The page polls its status and displays queued/running/completed/failed progress and step information."], bullets: ["A completed run returns to the normal upload flow after the success confirmation.", "A failed run displays the reported error and does not silently mark the data complete.", "Reset clears the current upload state in the page."], note: { tone: "warning", text: "Do not close or refresh the page while a run is being monitored unless you are prepared to check the resulting status elsewhere." } },
+    { title: "Create Segmentation", paragraphs: ["Create Segmentation generates taxpayer eligibility and size segments from the latest available GST, SWT and CIT upload data for the signed-in user. It is started from the Create Segmentation action on Upload Sheets."], steps: ["Open Upload Sheets and select Create Segmentation.", "Choose a Tax Parameter: GST, SWT or CIT.", "Select both Assessment Date: From and To values.", "Click START SEGMENTATION.", "The system validates that the three required historical years ending in the To-date year are available for the selected tax parameter.", "After validation succeeds, the segmentation job is queued and its progress is shown in the dialog.", "Wait for Segmentation Completed before closing the dialog."] , bullets: ["The selected date range must be valid, both dates are required, and To must be on or after From.", "A validation failure displays the returned message and any missing years; the dialog also advises uploading the required historical data and provides Retry.", "The job combines the latest available GST, CIT and SWT records, creates a segmentation output file, updates taxpayer segmentation data, and reports totals and segment counts when complete.", "Eligible taxpayers are classified as Large, Medium, Small or Micro; taxpayers without the required three-year history are reported as Ineligible.", "If segmentation is already running, the system returns an already-running error. Other job failures are shown in the dialog."], note: { tone: "info", text: "The Tax Parameter controls which tax history is checked before the job starts. The background job uses the latest available uploads for the user and does not complete until its status reports success." } },
+  ] },
+  { id: "validation", title: "Upload Validation & Processing", summary: "Validation must succeed before a tax-specific processing run can be started.", keywords: "validation processing status queued running failed completed invalid duplicate error", items: [
+    { title: "Validation states", bullets: ["The page reports staged messages such as uploading, reading the source file and validating.", "The validation response is displayed as a summary and determines whether Process is enabled.", "Validation or date errors appear in the page alert/dialog and must be corrected before continuing."] },
+    { title: "Processing states", table: { columns: ["State", "Meaning"], rows: [["Queued", "The run has been accepted and is waiting to start."], ["Running", "The tax pipeline is reporting a current step and progress."], ["Completed / Success", "Processing completed and the application shows a success confirmation."], ["Failed", "The application shows the returned failure message and stops the successful path."]] } },
+    { title: "Segmentation", paragraphs: ["Create Segmentation opens a date-and-tax-parameter workflow. The application first validates historical data, then queues a background job and polls its status. The source confirms a validation failure can identify missing years; segmentation must not be described as complete until the job reports success."], steps: ["Open the segmentation action from Upload Sheets.", "Choose tax parameter and both dates.", "Run historical-data validation.", "If validation succeeds, queue the segmentation job.", "Monitor status and percentage until completion or failure."] },
+  ] },
+  { id: "analytics", title: "Analytics", summary: "Analytics pages provide focused risk and compliance views beyond the tax dashboards.", keywords: "analytics risk assessment risk profiling compliance filter sector CSV taxpayer", items: [
+    { title: "Risk Assessment", paragraphs: ["Risk Assessment is an analytics route protected by analytics.risk_assessment. The page provides risk-oriented records/summary views and supports the filters and CSV export controls implemented on that screen."], bullets: ["Use the page controls to narrow the displayed assessment data.", "Use Download CSV where it is shown for the selected widget/table.", "Treat the displayed risk result as a review input and verify the underlying taxpayer record before action."] },
+    { title: "Compliance", paragraphs: ["Compliance is an analytics route protected by analytics.compliance. The page loads compliance summaries and record-level information from the existing application API."], bullets: ["Use the available dashboard controls and date/filter values.", "If no records match, review the selected criteria and date range.", "The Help Centre does not alter compliance calculations or data processing."] },
+    { title: "Risk Profiling", paragraphs: ["Risk Profiling is available through the Reports navigation and the taxpayer risk profiling report route. It presents risk-profile information and export actions implemented by the report screen."], bullets: ["Select the relevant taxpayer/report criteria.", "Review the returned risk profile and supporting values.", "Use the available Excel, CSV or PDF controls on the report page when shown."] },
+  ] },
+  { id: "reports", title: "Reports", summary: "Use reports for searchable record-level review and downloadable outputs.", keywords: "reports recent uploads taxpayer profile risk profiling CSV Excel PDF search date", items: [
+    { title: "Recent Uploads", bullets: ["Filter by date range and submit the selected range.", "Search by TIN, company/taxpayer or year.", "Review fraud status, taxpayer type, tax account number, month and year in the table.", "Download the filtered result as CSV when the button is available."] },
+    { title: "Taxpayer Profile", paragraphs: ["Taxpayer Profile is a protected report route for searching and reviewing taxpayer-level information. The page's available filters and exports are the authority for the current result set."], bullets: ["Search using the displayed taxpayer/TIN controls.", "Open the returned taxpayer information and review the fields provided.", "Use Excel or CSV export only from the controls shown by the page."] },
+    { title: "Report export guidance", note: { tone: "tip", text: "Exports reflect the selected filters and the data loaded by that screen. Apply filters first, then export, and keep the downloaded filename with the review record." } },
+  ] },
+  { id: "history", title: "Upload History", summary: "Review the record of files uploaded to the system.", keywords: "upload history file name tax parameter uploaded by role search table", items: [
+    { title: "What is recorded", bullets: ["File name", "Tax parameter", "Upload date/time", "Uploaded by", "Uploader role"], paragraphs: ["The page loads upload history from the existing API and displays the result in a searchable data table."] },
+    { title: "Find an upload", steps: ["Open Upload History from the sidebar.", "Enter a search term in the Search field.", "Review the filtered rows and the displayed metadata.", "Clear the search field to return to the full loaded list."] },
+  ] },
+  { id: "tin-master", title: "TIN Master", summary: "Maintain the taxpayer/TIN reference records when the account has access to the TIN Master route.", keywords: "TIN master taxpayer trade name enterprise type province status template XLS XLSX CSV add edit search", items: [
+    { title: "Import and maintain TINs", steps: ["Download the TIN Master import template when needed.", "Prepare a CSV, XLS or XLSX file using the template.", "Choose or drop the file and click Upload.", "Review the upload summary, including inserted, existing, duplicate-in-file, sector-not-found and invalid counts.", "Use Add TIN to create a single record or Edit to update an existing record."] },
+    { title: "Search and table behavior", bullets: ["Search supports TIN, taxpayer name and trade name.", "The table displays TIN, taxpayer name, trade name, enterprise type, province and status.", "Records are paginated and the page-size selector controls the number shown.", "When editing an existing row, the implementation disables the TIN and taxpayer name fields; status and other supported fields remain editable as shown by the form."] },
+  ] },
+  { id: "risk-assessment", title: "Risk Assessment", summary: "Review the application's risk assessment results and export the data exposed by the page.", keywords: "risk assessment fraud risk flagged download CSV sector", items: [
+    { title: "Review workflow", steps: ["Open Risk Assessment from Analytics.", "Choose the available filter values, such as the sector selector exposed by the page.", "Review the result cards/tables and the associated risk records.", "Use Download CSV for the selected widget where provided."] },
+    { title: "Interpreting results", paragraphs: ["Risk assessment results identify records for further review. Confirm the TIN, taxpayer details and source period in the supporting tables before taking an administrative action."], note: { tone: "warning", text: "The Help Centre documents the screen behavior only; it does not define a new risk threshold or change the application's model output." } },
+  ] },
+  { id: "risk-profiling", title: "Risk Profiling", summary: "Use the report view to examine taxpayer risk profiles and download supported formats.", keywords: "risk profiling taxpayer report PDF CSV Excel profile", items: [
+    { title: "Use the report", steps: ["Open Risk Profiling from Reports.", "Enter or choose the taxpayer/report criteria shown on the page.", "Review the returned profile and supporting data.", "Export using the formats presented by the page, which may include Excel, CSV and PDF."] },
+    { title: "Taxpayer report", paragraphs: ["The application also exposes a dedicated taxpayer risk profiling report route. It is protected by the reports.risk_profiling permission and should be used only for records available to the signed-in account."] },
+  ] },
+  { id: "common-dashboard", title: "Common Dashboard", summary: "A cross-cutting dashboard for comparing the processed tax data available to the user.", keywords: "common dashboard cross tax sales payable segmentation risk province PDF CSV multi-tax integration multi tax integration multitax integration refresh summary", items: [
+    { title: "Dashboard controls", bullets: ["Apply From and To dates to the dashboard request.", "Review summary cards and chart cards.", "Switch supported chart cards between visualization and table views.", "Use PDF for the dashboard and CSV for the dataset exposed by each download control."] },
+    { title: "Empty and filtered results", paragraphs: ["The dashboard can show no records for a selected period. Adjust the date range or confirm that a tax upload has been processed before treating an empty state as an error."] },
+    { title: "Run Multi-Tax Integration", paragraphs: ["Run Multi-Tax Integration refreshes the shared cross-tax data used by the Common Dashboard. It prepares aggregate projections for GST, SWT and CIT, runs the integration across those tax sources, and then rebuilds the Common Dashboard summary."], steps: ["Open Common Dashboard. The route is available to authenticated users with the dashboard.dashboard permission.", "Review the dashboard criteria and confirm the relevant processed tax data is available. The rebuild action itself does not submit the dashboard date or TIN filters.", "Click Run Multi-Tax Integration.", "The system refreshes the GST, SWT and CIT aggregate data by tax period, validates the source TIN/year grain, and builds a new cross-tax integration result set.", "The integration result is validated and published, then the dashboard summary is rebuilt from the integration results.", "Follow the status dialog until it reports Completed. The dashboard then closes the dialog and reloads its summary, records and TIN options."], bullets: ["The integrated records include GST, SWT and CIT values and cross-tax comparison fields such as GST-versus-CIT sales differences, SWT-versus-CIT salary differences, tax-type fraud/validation flags and a Multi-Tax Issue value.", "The operation refreshes aggregate projections and integration results; it does not rerun the tax prediction pipelines or modify the raw financial tables.", "While the operation is running, the button is disabled and the dialog reports stages such as Preparing Multi-Tax Integration, Refreshing Multi-Tax aggregates, Running Multi-Tax Integration, Rebuilding Dashboard Summary and Completed.", "If startup is already in progress, the application reports that the dashboard refresh is already running. If integration or summary rebuilding fails, the dialog reports a failure message and the dashboard summary is not treated as successfully rebuilt."] },
+  ] },
+  { id: "taxpayer-profile", title: "Taxpayer Profile", summary: "Use the taxpayer report route to find and inspect taxpayer information available to your account.", keywords: "taxpayer profile TIN search details report Excel CSV", items: [
+    { title: "Profile review", steps: ["Open Taxpayer Profile from Reports.", "Use the page's search or filter controls to identify the taxpayer.", "Review the returned profile fields and associated record details.", "Export the displayed result using the available Excel or CSV action when required."] },
+    { title: "Access boundary", note: { tone: "warning", text: "The page only returns data allowed by the current account and the existing API. A missing taxpayer result can be caused by the search criteria, data availability or permissions." } },
+  ] },
+  { id: "recent-uploads", title: "Recent Uploads", summary: "Review recently processed records and filter them by date or searchable identifiers.", keywords: "recent uploads TIN company year date fraud CSV search", items: [
+    { title: "Filter and export", steps: ["Choose the start and end dates.", "Submit the date filter.", "Search by TIN, company/taxpayer or year.", "Review the table's fraud status, type, account and period columns.", "Download CSV for the current criteria when the control is available."] },
+  ] },
+  { id: "settings", title: "Settings & Administration", summary: "Permission-dependent administration screens manage users, roles, permissions and data controls.", keywords: "settings users roles permissions invalid TIN conflicts audit logs reset database admin supervisor", items: [
+    { title: "Users, Roles and Permissions", bullets: ["Users lists accounts and supports status changes and user form actions available to the administrator.", "Roles lists roles, shows system-role indicators and user counts, and supports the role actions provided by the page.", "Role Permissions lets an authorized user select a role and update its permission selections."] },
+    { title: "Invalid TINs", bullets: ["View invalid TIN records.", "Add records through the form.", "Enable or disable a record's status.", "Review the displayed creation date and status."] },
+    { title: "Conflicts and audit logs", paragraphs: ["Settings includes permission-dependent conflict list, conflict history and audit-log screens. Conflict actions can approve or reject records, while history/audit views show the recorded action and change information."], note: { tone: "warning", text: "Conflict approval/rejection can update underlying fraud data and rerun processing. Use these controls only under the organization's review procedure." } },
+    { title: "Reset DB", paragraphs: ["The Reset DB screen is restricted by settings.reset_db and exposes destructive administrative actions such as database reset and cleanup of temporary encrypted processing files."], note: { tone: "warning", text: "Do not use Reset DB or cleanup actions as routine troubleshooting. Confirm authorization and recovery procedures first." } },
+  ] },
+  { id: "errors", title: "Error Handling & Troubleshooting", summary: "Use the message shown by the page, then correct the input or access condition before retrying.", keywords: "error troubleshooting login upload invalid file required fields validation processing no records permission CSV report", items: [
+    { title: "Common problems", table: { columns: ["Problem", "Likely cause", "Resolution"], rows: [["Cannot sign in", "Credentials rejected or session cannot be restored.", "Re-enter the credentials; if the problem continues, contact the administrator."], ["File is rejected", "The file extension is unsupported or no file was selected.", "Use a supported CSV/Parquet tax file or CSV/XLS/XLSX TIN Master file."], ["Validation fails", "Data or date-range validation returned an error.", "Read the displayed message, correct the source data/date range and validate again."], ["Process is unavailable", "Validation has not succeeded or a required date/file is missing.", "Complete validation successfully and provide the required dates."], ["No records found", "The selected period/filter has no matching data or the account cannot see it.", "Clear or adjust filters and confirm the relevant upload has completed."], ["Cannot access a module", "The account lacks the route permission or required role.", "Ask an administrator to review the account's role/permissions."], ["Export fails", "The data request or browser download failed.", "Retry with the filters applied; if it persists, record the page and criteria for support."]] } },
+    { title: "Safe retry pattern", steps: ["Read the exact alert, dialog or status text.", "Record the selected tax type, dates and filename.", "Correct only the reported input problem.", "Retry validation or the page request.", "If processing remains failed, provide the run status/error to the administrator instead of repeatedly submitting the same file."] },
+  ] },
+  { id: "best-practices", title: "Best Practices", summary: "Consistent preparation and review make results easier to trace.", keywords: "best practices data upload review export security workflow", items: [
+    { title: "Before upload", bullets: ["Use the applicable sample/template and verify the tax parameter.", "Check that the assessment dates are complete and ordered correctly.", "Keep the original source file unchanged so corrections can be traced.", "Confirm you are signed in with the correct account and permission set."] },
+    { title: "During review", bullets: ["Preview the file before validation when the preview is available.", "Review invalid records instead of ignoring the validation result.", "Wait for the final processing status before reviewing dashboards.", "Use the same date/filter criteria when comparing a screen with an export.", "Treat fraud/risk flags as review signals and retain the supporting TIN/taxpayer context."] },
+    { title: "Data handling", bullets: ["Download exports only to an approved location.", "Do not share credentials or expose taxpayer data unnecessarily.", "Use administrator-only actions such as permission changes, conflict approval and database reset according to policy."] },
+  ] },
+  { id: "end-to-end", title: "Complete End-to-End Workflow", summary: "A concise operating sequence from login through reporting.", keywords: "complete end to end workflow login upload validate process segmentation dashboard report history", items: [
+    { title: "Operational sequence", steps: ["Authenticate and confirm the permitted navigation is visible.", "Prepare the GST, SWT or CIT source file and assessment dates.", "Upload and preview the source file.", "Validate it and resolve any invalid-record result.", "Process the validated file and wait for Completed/Success.", "Repeat for other tax types as required by the review assignment.", "Run the segmentation workflow only when the relevant historical data is available.", "Review Common, GST, SWT or CIT dashboards.", "Use Risk Assessment, Risk Profiling and Compliance for focused review.", "Use Recent Uploads, Taxpayer Profile and Upload History to trace records and uploads.", "Export the required CSV, Excel or PDF output from the relevant screen.", "Retain the upload and export details with the review record."] },
+    { title: "Completion check", bullets: ["The relevant run status is completed.", "The selected date range matches the review period.", "Invalid records and validation messages have been addressed.", "Risk/fraud results have supporting TIN/taxpayer context.", "Exports were taken after applying the intended filters."] },
+  ] },
+  { id: "faq", title: "Frequently Asked Questions", summary: "Short answers to the most common operating questions.", keywords: "FAQ frequently asked questions how upload login CSV risk taxpayer report", items: [
+    { title: "How do I log in?", paragraphs: ["Enter the account email and password on the login page. Only authenticated users can open the protected application routes."] },
+    { title: "Why can I not see a module?", paragraphs: ["The sidebar filters modules by the permissions returned for the signed-in account. Ask an administrator to review the role and permission assignment."] },
+    { title: "What happens after upload?", paragraphs: ["The file is uploaded and validated first. If valid, Process starts the tax-specific pipeline; the page polls and displays its status until completion or failure."] },
+    { title: "Can I search the manual?", paragraphs: ["Yes. Search is client-side and indexes section titles, topic titles, descriptions, instructions, keywords, troubleshooting text and FAQs. Matching sections open automatically."] },
+    { title: "How do I export results?", paragraphs: ["Use the CSV, Excel or PDF control shown on the relevant dashboard/report. Exports are screen-specific and reflect the selected filters where the page sends them to the request."] },
+    { title: "What is Multi-Tax Integration?", paragraphs: ["In the RBA Tool, Multi-Tax Integration prepares shared cross-tax results from GST, SWT and CIT aggregate data. Running it refreshes the tax aggregates, validates and publishes the integrated result set, and rebuilds the Common Dashboard summary. Users start it with Run Multi-Tax Integration on Common Dashboard and monitor the status until the dashboard reloads successfully."] },
+    { title: "How do I find a taxpayer?", paragraphs: ["Use the search/filter control on Taxpayer Profile, Recent Uploads or the relevant tax dashboard. Search fields differ by page and are labelled in the interface."] },
+    { title: "What if a report is empty?", paragraphs: ["Clear or adjust the search/date filters and verify that the required upload has completed. If it remains empty, confirm that the account can access the underlying records."] },
+  ] },
+];
+
+const getSectionText = (section) => JSON.stringify(section).toLowerCase();
+function renderText(text) { return text.split(/(CSV|PDF|Excel|TIN|GST|SWT|CIT)/g).map((part, index) => ["CSV", "PDF", "Excel", "TIN", "GST", "SWT", "CIT"].includes(part) ? <strong key={`${part}-${index}`}>{part}</strong> : part); }
+
+function ManualTopic({ item, isSearchMatch }) {
+  return <details className="manual-topic" open={isSearchMatch || undefined}><summary>{item.title}<ChevronDown size={17} aria-hidden="true" /></summary><div className="manual-topic-body">
+    {item.paragraphs?.map((paragraph) => <p key={paragraph}>{renderText(paragraph)}</p>)}
+    {item.note && <div className={`manual-callout ${item.note.tone}`}><Lightbulb size={18} /><span>{renderText(item.note.text)}</span></div>}
+    {item.bullets && <ul>{item.bullets.map((bullet) => <li key={bullet}>{renderText(bullet)}</li>)}</ul>}
+    {item.steps && <ol className="manual-steps">{item.steps.map((step) => <li key={step}>{renderText(step)}</li>)}</ol>}
+    {item.table && <div className="manual-table-wrap"><table className="manual-table"><thead><tr>{item.table.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{item.table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{renderText(cell)}</td>)}</tr>)}</tbody></table></div>}
+  </div></details>;
+}
+
+function addPdfText(doc, text, x, y, width, options = {}) {
+  const lines = doc.splitTextToSize(String(text), width); const lineHeight = options.lineHeight || 5; const pageHeight = doc.internal.pageSize.getHeight();
+  if (y + lines.length * lineHeight > pageHeight - 18) { doc.addPage(); y = 18; }
+  doc.setFont(options.font || "helvetica", options.style || "normal"); doc.setFontSize(options.size || 9.5); doc.setTextColor(...(options.color || [44, 50, 65])); doc.text(lines, x, y);
+  return y + lines.length * lineHeight + (options.gap ?? 2);
+}
+
+function downloadCompleteManual() {
+  const doc = new jsPDF({ unit: "mm", format: "a4" }); const width = doc.internal.pageSize.getWidth(); const contentWidth = width - 28; let y = 30;
+  doc.setFillColor(27, 43, 116); doc.rect(0, 0, width, 297, "F"); doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(30); doc.text("RBA Tool", 18, 76); doc.setFontSize(20); doc.text("User Manual", 18, 90); doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.text(`${MANUAL_VERSION} | ${MANUAL_DATE}`, 18, 104); doc.setDrawColor(255, 206, 0); doc.setLineWidth(1.2); doc.line(18, 114, 80, 114); doc.setFontSize(10); doc.text("Authenticated enterprise workflow guide", 18, 128);
+  doc.addPage(); y = 22; doc.setTextColor(27, 43, 116); doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.text("Table of Contents", 14, y); y += 11; helpSections.forEach((section, index) => { y = addPdfText(doc, `${index + 1}. ${section.title}`, 18, y, contentWidth, { size: 10, gap: 1 }); });
+  helpSections.forEach((section, sectionIndex) => { doc.addPage(); y = 20; y = addPdfText(doc, `${sectionIndex + 1}. ${section.title}`, 14, y, contentWidth, { size: 16, style: "bold", color: [27, 43, 116], gap: 4 }); y = addPdfText(doc, section.summary, 14, y, contentWidth, { size: 10, color: [80, 87, 102], gap: 5 }); section.items.forEach((item, itemIndex) => { y = addPdfText(doc, `${sectionIndex + 1}.${itemIndex + 1} ${item.title}`, 14, y, contentWidth, { size: 11.5, style: "bold", color: [106, 0, 255], gap: 2 }); item.paragraphs?.forEach((paragraph) => { y = addPdfText(doc, paragraph, 17, y, contentWidth - 3); }); item.bullets?.forEach((bullet) => { y = addPdfText(doc, `• ${bullet}`, 19, y, contentWidth - 5, { gap: 1 }); }); item.steps?.forEach((step, stepIndex) => { y = addPdfText(doc, `${stepIndex + 1}. ${step}`, 19, y, contentWidth - 5, { gap: 1 }); }); if (item.note) y = addPdfText(doc, `${item.note.tone.toUpperCase()}: ${item.note.text}`, 17, y, contentWidth - 3, { style: "italic", color: [100, 70, 20], gap: 3 }); if (item.table) { if (y > 245) { doc.addPage(); y = 18; } autoTable(doc, { startY: y, head: [item.table.columns], body: item.table.rows, margin: { left: 14, right: 14 }, styles: { fontSize: 8, cellPadding: 2.2, overflow: "linebreak" }, headStyles: { fillColor: [27, 43, 116], textColor: 255 }, alternateRowStyles: { fillColor: [244, 246, 250] } }); y = doc.lastAutoTable.finalY + 7; } if (y > 270) { doc.addPage(); y = 18; } }); });
+  const totalPages = doc.getNumberOfPages(); for (let page = 1; page <= totalPages; page += 1) { doc.setPage(page); doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(110, 118, 135); doc.text("RBA Tool User Manual", 14, 290); doc.text(`${page} / ${totalPages}`, width - 28, 290); } doc.save("RBA-Tool-User-Manual.pdf");
+}
+
 export default function HelpCenter() {
-  const [collapsed, setCollapsed] = useState(false);
-  const [openMenu, setOpenMenu] = useState(null);
+  const [collapsed, setCollapsed] = useState(false); const [openMenu, setOpenMenu] = useState(null); const [query, setQuery] = useState(""); const [expandedSections, setExpandedSections] = useState(new Set(["introduction"])); const [pendingScrollId, setPendingScrollId] = useState(null);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredSections = useMemo(() => { if (!normalizedQuery) return helpSections; return helpSections.map((section) => { const sectionMatches = getSectionText(section).includes(normalizedQuery); return { ...section, items: sectionMatches ? section.items : section.items.filter((item) => getSectionText(item).includes(normalizedQuery)) }; }).filter((section) => section.items.length > 0); }, [normalizedQuery]);
+  const visibleSectionIds = filteredSections.map((section) => section.id).join("|");
+  useEffect(() => { if (!normalizedQuery) return; setExpandedSections((current) => { const next = new Set(visibleSectionIds ? visibleSectionIds.split("|") : []); if (current.size === next.size && [...current].every((id) => next.has(id))) return current; return next; }); }, [normalizedQuery, visibleSectionIds]);
+  useEffect(() => { if (!pendingScrollId) return; const element = document.getElementById(pendingScrollId); if (!element) return; element.scrollIntoView({ behavior: "smooth", block: "start" }); setPendingScrollId(null); }, [pendingScrollId, normalizedQuery, visibleSectionIds]);
+  const toggleSection = (id) => setExpandedSections((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const handleReset = () => { setQuery(""); setExpandedSections(new Set(["introduction"])); setPendingScrollId(null); };
+  const scrollToSection = (sectionId) => { setExpandedSections((current) => new Set(current).add(sectionId)); if (normalizedQuery && !filteredSections.some((section) => section.id === sectionId)) setQuery(""); setPendingScrollId(sectionId); };
 
-  const publicBase = import.meta.env.BASE_URL || "/";
-  const PDF_PATH = `${publicBase}Tax_Fraud_Detection_UserGuide_v2.pdf`;
-  const DOCX_PATH = `${publicBase}Tax_Fraud_Detection_UserGuide_v2.docx`;
-
-  const triggerDownload = (url, filename) => {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  };
-
-  const handleDownload = async () => {
-    try {
-      const res = await fetch(PDF_PATH, { method: "HEAD" });
-      if (res.ok) {
-        triggerDownload(PDF_PATH, "Tax_Fraud_Detection_UserGuide_v2.pdf");
-        return;
-      }
-    } catch (error) {
-      // Fall back to DOCX when PDF is not available.
-    }
-
-    triggerDownload(DOCX_PATH, "Tax_Fraud_Detection_UserGuide_v2.docx");
-  };
-
-  return (
-    <div className="container-fluid">
-      <div className="row">
-        <Header toggleSidebar={() => setCollapsed(!collapsed)} />
-
-        <div className="col-lg-12">
-          <Sidebar
-            collapsed={collapsed}
-            setCollapsed={setCollapsed}
-            openMenu={openMenu}
-            setOpenMenu={setOpenMenu}
-          />
-
-          <main className="main-content mt-5 help-center-main">
-            <div className="help-center-scroll">
-              <div className="help-center-card">
-                <div className="help-center-title-row">
-                  <div>
-                    <div className="help-center-title">Help Centre</div>
-                    <div className="help-center-subtitle">
-                      Tax Fraud Detection System - User Help Guide (Version 1.0, April 2026)
-                    </div>
-                  </div>
-                  <Button
-                    variant="contained"
-                    startIcon={<FileDownloadIcon />}
-                    onClick={handleDownload}
-                    style={{ backgroundColor: "#6A00FF" }}
-                  >
-                    Download PDF
-                  </Button>
-                </div>
-
-                <div className="help-section">
-                  <h2>Table of Contents</h2>
-                  <ul className="help-list">
-                    <li>1. Introduction</li>
-                    <li>2. Sidebar Navigation</li>
-                    <li>3. Upload Sheet</li>
-                    <li>4. Dashboard</li>
-                    <li>5. Analytics</li>
-                    <li>6. Reports</li>
-                    <li>7. Upload History</li>
-                    <li>8. Error Handling</li>
-                    <li>9. Best Practices</li>
-                    <li>10. Complete Workflow Summary</li>
-                    <li>11. Conclusion</li>
-                  </ul>
-                </div>
-
-                <hr className="help-divider" />
-
-                <div className="help-section">
-                  <h2>1. Introduction</h2>
-                  <p>
-                    The Tax Fraud Detection System (RBA Tool) is a web-based platform designed to
-                    help tax authorities identify fraudulent tax records using machine learning algorithms.
-                    It processes three types of tax data (GST, SWT, and CIT) and flags suspicious submissions
-                    automatically.
-                  </p>
-
-                  <h3>1.1 What You Can Do</h3>
-                  <ul className="help-list">
-                    <li>Upload tax data files in CSV format (GST, SWT, CIT).</li>
-                    <li>Preview and validate records before processing.</li>
-                    <li>Detect fraudulent or suspicious entries using ML algorithms.</li>
-                    <li>View analytics dashboards by tax parameter.</li>
-                    <li>Perform risk assessment and taxpayer risk profiling.</li>
-                    <li>Generate taxpayer segmentation reports.</li>
-                    <li>Track all upload activity in Upload History.</li>
-                  </ul>
-
-                  <h3>1.2 Supported Tax Parameters</h3>
-                  <ul className="help-list">
-                    <li>GST - Goods and Services Tax</li>
-                    <li>SWT - Salary and Wages Tax</li>
-                    <li>CIT - Company Income Tax</li>
-                  </ul>
-                </div>
-
-                <div className="help-section">
-                  <h2>2. Sidebar Navigation</h2>
-                  <p>The left sidebar is the primary navigation element. Click any item to navigate directly.</p>
-                  <table className="help-table">
-                    <thead>
-                      <tr>
-                        <th>Menu Item</th>
-                        <th>Sub-Items</th>
-                        <th>Purpose</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Dashboard</td>
-                        <td>Dashboard, GST, SWT, CIT</td>
-                        <td>High-level analytics and fraud summaries per tax type</td>
-                      </tr>
-                      <tr>
-                        <td>Upload Sheets</td>
-                        <td>-</td>
-                        <td>Upload, validate, and process GST/SWT/CIT CSV files</td>
-                      </tr>
-                      <tr>
-                        <td>Analytics</td>
-                        <td>Risk Assessment, Risk Profiling, Compliance</td>
-                        <td>In-depth risk analytics and taxpayer profiling</td>
-                      </tr>
-                      <tr>
-                        <td>Reports</td>
-                        <td>Recent Uploads, Taxpayer Profile, Risk Profiling</td>
-                        <td>Detailed reports on processed records and fraud findings</td>
-                      </tr>
-                      <tr>
-                        <td>Upload History</td>
-                        <td>-</td>
-                        <td>Full log of all uploaded files with metadata</td>
-                      </tr>
-                      <tr>
-                        <td>Help Centre</td>
-                        <td>-</td>
-                        <td>User documentation and support</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="help-section">
-                  <h2>3. Upload Sheet</h2>
-                  <p>
-                    The Upload Sheet module is the core feature of the RBA Tool. It allows analysts to upload
-                    tax data files, validate records, run ML-based fraud detection, and generate segmentation.
-                    All three tax types (GST, SWT, CIT) must be uploaded and processed before segmentation can be created.
-                  </p>
-                  <div className="help-note">
-                    Important: Always upload all three tax files (GST, SWT, CIT) before clicking Create Segmentation.
-                  </div>
-
-                  <h3>3.1 Accessing the Upload Sheet</h3>
-                  <ul className="help-list">
-                    <li>Log in to the RBA Tool.</li>
-                    <li>Click Upload Sheets in the left sidebar.</li>
-                    <li>The Upload Sheet page opens with GST selected by default.</li>
-                  </ul>
-
-                  <h3>3.2 Downloading Sample Files</h3>
-                  <ul className="help-list">
-                    <li>Sample CSV templates are available at the top-right corner of the page.</li>
-                    <li>Download the samples to understand the required column structure.</li>
-                    <li>SAMPLE GST, SAMPLE SWT, and SAMPLE CIT templates are provided.</li>
-                  </ul>
-
-                  <h3>3.3 Uploading GST Data</h3>
-                  <ul className="help-list">
-                    <li>
-                      Step 1 - Select Tax Parameter and Date Range.<br />
-                      Choose GST from the dropdown and set the assessed dates.
-                    </li>
-                    <li>
-                      Step 2 - Upload the CSV File.<br />
-                      Drag and drop the GST CSV file or click inside the upload area. Only CSV files are accepted.
-                    </li>
-                    <li>
-                      Step 3 - Preview the File.<br />
-                      Click Show Preview to review the first 10 rows.
-                    </li>
-                    <li>
-                      Step 4 - Upload and Validate.<br />
-                      Click Upload & Validate. The system checks missing TINs and duplicates and shows totals.
-                    </li>
-                    <li>
-                      Step 5 - Download Invalid Records (if applicable).<br />
-                      If invalid records are detected, download the invalid rows for correction.
-                    </li>
-                    <li>
-                      Step 6 - Process the Data.<br />
-                      Click Process to run the ML algorithm. A progress bar shows the current step.
-                    </li>
-                    <li>
-                      Step 7 - Processing Complete.<br />
-                      A success dialog confirms GST processing completion.
-                    </li>
-                  </ul>
-
-                  <h3>3.4 Uploading SWT Data</h3>
-                  <ul className="help-list">
-                    <li>Select SWT from the tax parameter dropdown.</li>
-                    <li>Set assessed dates, upload the SWT CSV, and preview the first 10 rows.</li>
-                    <li>Click Upload & Validate, review invalid records if any, then click Process.</li>
-                  </ul>
-
-                  <h3>3.5 Uploading CIT Data</h3>
-                  <ul className="help-list">
-                    <li>Select CIT from the tax parameter dropdown.</li>
-                    <li>Set assessed dates, upload, preview, validate, and process the CIT CSV file.</li>
-                  </ul>
-
-                  <h3>3.6 Creating Segmentation</h3>
-                  <ul className="help-list">
-                    <li>GST, SWT, and CIT must all be processed before the Create Segmentation button becomes active.</li>
-                    <li>Click Create Segmentation (purple button at the top of the page).</li>
-                    <li>When segmentation completes, click View to open the Final Merged Audit Summary.</li>
-                  </ul>
-
-                  <h3>3.7 Final Merged Audit Summary</h3>
-                  <p>The Final Merged Audit Summary table displays combined fraud detection results for all processed records.</p>
-                  <ul className="help-list">
-                    <li>TIN - Tax Identification Number</li>
-                    <li>Taxpayer Name - Entity name</li>
-                    <li>Type - Taxpayer category</li>
-                    <li>Segmentation - Large, Medium, Small</li>
-                    <li>Total Sales - Reported total sales</li>
-                    <li>GST Payable / GST Refund - GST amounts</li>
-                    <li>Fraud - Valid or Fraud Detected</li>
-                  </ul>
-                  <p>
-                    Fraud Flags: Valid records passed ML checks. Fraud Detected records are flagged for investigation.
-                  </p>
-                </div>
-
-                <div className="help-section">
-                  <h2>4. Dashboard</h2>
-                  <p>
-                    The Dashboard module provides analytics and fraud detection summaries. It is divided into the Common
-                    Dashboard and GST, SWT, and CIT dashboards.
-                  </p>
-
-                  <h3>4.1 Common Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Key Metrics: Total Income, Total Profit, Total CIT Tax, Effective Tax Rate.</li>
-                    <li>Charts: Tax Flow, Top Sectors by Income, Fraud Cases by Year, Fraud Distribution.</li>
-                    <li>Tables: Top Financial TINs and Consolidated Records.</li>
-                    <li>Filtering: Use Select TIN dropdown to filter all charts and tables.</li>
-                    <li>Export: Download PDF to export the dashboard view.</li>
-                  </ul>
-
-                  <h3>4.2 GST Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Summary Cards: Total Tax Payers, Total Sales Income, Total GST Payable, Total GST Refundable.</li>
-                    <li>Charts: Sales Comparison, GST Payable vs Refundable, Segmentation Distribution, Risk Flagged vs Non-Risk.</li>
-                    <li>Map: Fraud TIN Distribution by Province with a risk scale (0-100%).</li>
-                    <li>Export: Download PDF for GST dashboard view.</li>
-                  </ul>
-
-                  <h3>4.3 SWT Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Summary Cards: Total Employers, Total Wages Paid, Total SWT Deducted, Effective SWT Rate.</li>
-                    <li>Charts: Salary vs SWT Deducted, Fraud Cases (Monthly), Segmentation Distribution.</li>
-                    <li>Map: Fraud TIN Distribution by Province with risk shading.</li>
-                    <li>Table: Latest SWT Records with pagination.</li>
-                  </ul>
-
-                  <h3>4.4 CIT Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Tables: Top 50 Net Profit and Top 50 Net Loss taxpayers.</li>
-                    <li>Charts: Segmentation Distribution, Risk Flagged vs Non-Risk.</li>
-                    <li>Tables: Superannuation PNG vs Foreign, Interest PNG vs Foreign.</li>
-                    <li>Map: Fraud TIN Distribution by Province with risk color coding.</li>
-                    <li>Table: Gross Sales vs COGS by year.</li>
-                  </ul>
-                </div>
-
-                <div className="help-section">
-                  <h2>5. Analytics</h2>
-                  <p>
-                    The Analytics module provides advanced risk analysis tools including Risk Assessment, Risk Profiling,
-                    and Compliance.
-                  </p>
-
-                  <h3>5.1 Risk Assessment Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Risk Breakdown by Category (Segment) - Total vs Flagged records.</li>
-                    <li>Sector-based Risk - Taxpayers vs Risk Flagged by industry sector.</li>
-                    <li>Total Taxpayers vs Risk Flagged by month.</li>
-                    <li>Frequency of Risk Anomalies pie chart.</li>
-                    <li>List of Risk Assessment Companies with export to CSV.</li>
-                  </ul>
-                  <p>How to use: Select a sector and use Download CSV to export widget data.</p>
-
-                  <h3>5.2 Risk Profiling Dashboard</h3>
-                  <ul className="help-list">
-                    <li>Frequency of Risk Anomalies (Flagged vs Not Flagged).</li>
-                    <li>Risk Breakdown by Category across segments.</li>
-                    <li>Payable vs Refundable by industry.</li>
-                    <li>Input Credits vs Output Debits by industry.</li>
-                    <li>Sales Comparison Table with Excel/CSV export.</li>
-                  </ul>
-                  <p>Industry filtering: Use the industry dropdown to compare financial metrics across sectors.</p>
-                </div>
-
-                <div className="help-section">
-                  <h2>6. Reports</h2>
-                  <p>
-                    The Reports module provides detailed data tables and taxpayer-specific fraud reports: Recent Uploads,
-                    Taxpayer Profile, and Risk Profiling.
-                  </p>
-
-                  <h3>6.1 Recent Uploads</h3>
-                  <ul className="help-list">
-                    <li>Filter by tax type using the Category dropdown.</li>
-                    <li>Search by TIN, Company Name, or Year.</li>
-                    <li>Export using Excel or CSV buttons.</li>
-                  </ul>
-                  <p>Table Columns: TIN, Company Name, Type, Tax Account Number, Month/Year, Fraud Status, Fraud Reason.</p>
-                  <p>
-                    Viewing Fraud Reasons: Click View Reason for Fraud Detected records to open the details popup.
-                  </p>
-
-                  <h3>6.2 Taxpayer Profile</h3>
-                  <ul className="help-list">
-                    <li>Filter by Tax Type and date range.</li>
-                    <li>Use Search taxpayer box for specific entities.</li>
-                    <li>Export results using Excel or CSV.</li>
-                  </ul>
-                  <p>Table Columns: TIN, Taxpayer Name, Risk Score, Risk Type, Flagged, Fraud Reason.</p>
-                  <p>Pagination shows up to 100 records per page by default.</p>
-
-                  <h3>6.3 Risk Profiling Report</h3>
-                  <ul className="help-list">
-                    <li>Select a specific TIN/Taxpayer and date range.</li>
-                    <li>Export the report using Excel, CSV, or PDF buttons.</li>
-                  </ul>
-                  <p>Report Sections:</p>
-                  <ul className="help-list">
-                    <li>GST Analysis: Overview, Payable vs Refundable, Input vs Output, Compliance Metrics, Fraud Summary.</li>
-                    <li>SWT Analysis: Overview, Fraud Metrics, Fraud Patterns, Compliance Metrics.</li>
-                  </ul>
-                </div>
-
-                <div className="help-section">
-                  <h2>7. Upload History</h2>
-                  <ul className="help-list">
-                    <li>Click Upload History in the left sidebar to view all uploaded files.</li>
-                    <li>Use Search to filter by file name, date, or tax parameter.</li>
-                    <li>Pagination shows 10 rows per page and total upload count.</li>
-                  </ul>
-                  <p>Table Columns: Date, File Name, Tax Parameter, Uploaded By, Role.</p>
-                </div>
-
-                <div className="help-section">
-                  <h2>8. Error Handling</h2>
-                  <table className="help-table">
-                    <thead>
-                      <tr>
-                        <th>Error Type</th>
-                        <th>Description</th>
-                        <th>Resolution</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Missing TIN</td>
-                        <td>Record has no Tax Identification Number.</td>
-                        <td>Add the correct TIN and re-upload.</td>
-                      </tr>
-                      <tr>
-                        <td>Duplicate TIN</td>
-                        <td>Same TIN with identical tax year and month.</td>
-                        <td>Remove duplicate rows before re-uploading.</td>
-                      </tr>
-                      <tr>
-                        <td>Invalid File Format</td>
-                        <td>File is not CSV or does not match column structure.</td>
-                        <td>Use the sample file as a template and re-upload.</td>
-                      </tr>
-                      <tr>
-                        <td>Upload Failure</td>
-                        <td>File upload was interrupted or rejected by the server.</td>
-                        <td>Check file size and format. Refresh and try again.</td>
-                      </tr>
-                      <tr>
-                        <td>Processing Error</td>
-                        <td>ML processing failed during execution.</td>
-                        <td>Refresh the page and re-initiate processing. Contact admin if repeated.</td>
-                      </tr>
-                    </tbody>
-                  </table>
-
-                  <h3>8.1 Downloading Invalid Records</h3>
-                  <ul className="help-list">
-                    <li>If Invalid Records count is greater than 0, a download link appears next to the count.</li>
-                    <li>Download the CSV of invalid rows, correct the errors, and re-upload.</li>
-                  </ul>
-                </div>
-
-                <div className="help-section">
-                  <h2>9. Best Practices</h2>
-                  <h3>9.1 Before Uploading</h3>
-                  <ul className="help-list">
-                    <li>Use the sample CSV template to prepare data.</li>
-                    <li>Ensure all records contain a valid TIN.</li>
-                    <li>Remove duplicate rows before uploading.</li>
-                    <li>Confirm the correct financial period dates.</li>
-                  </ul>
-
-                  <h3>9.2 During Upload</h3>
-                  <ul className="help-list">
-                    <li>Use Show Preview to confirm column mapping.</li>
-                    <li>Review the first 10 rows for accuracy.</li>
-                    <li>Click Upload & Validate before clicking Process.</li>
-                    <li>Download and correct invalid records if needed.</li>
-                  </ul>
-
-                  <h3>9.3 Processing Order</h3>
-                  <ul className="help-list">
-                    <li>Upload and process GST first, then SWT, then CIT.</li>
-                    <li>Do not click Create Segmentation until all three are processed.</li>
-                    <li>Wait for success confirmation before moving to the next step.</li>
-                  </ul>
-
-                  <h3>9.4 General</h3>
-                  <ul className="help-list">
-                    <li>Check Upload History before re-uploading to avoid duplicates.</li>
-                    <li>Use the TIN filter on dashboards to investigate specific taxpayers.</li>
-                    <li>Use Download CSV and Download PDF on dashboards and reports.</li>
-                    <li>Review Fraud Reason details for all Fraud Detected records.</li>
-                  </ul>
-                </div>
-
-                <div className="help-section">
-                  <h2>10. Complete Workflow Summary</h2>
-                  <table className="help-table">
-                    <thead>
-                      <tr>
-                        <th>Step</th>
-                        <th>Action</th>
-                        <th>Where</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>1</td>
-                        <td>Log in to the RBA Tool</td>
-                        <td>Login Page</td>
-                      </tr>
-                      <tr>
-                        <td>2</td>
-                        <td>Download sample CSV templates</td>
-                        <td>Upload Sheet - Sample buttons</td>
-                      </tr>
-                      <tr>
-                        <td>3</td>
-                        <td>Upload and process GST data</td>
-                        <td>Upload Sheet - Select GST - Upload - Validate - Process</td>
-                      </tr>
-                      <tr>
-                        <td>4</td>
-                        <td>Upload and process SWT data</td>
-                        <td>Upload Sheet - Select SWT - Upload - Validate - Process</td>
-                      </tr>
-                      <tr>
-                        <td>5</td>
-                        <td>Upload and process CIT data</td>
-                        <td>Upload Sheet - Select CIT - Upload - Validate - Process</td>
-                      </tr>
-                      <tr>
-                        <td>6</td>
-                        <td>Create Segmentation</td>
-                        <td>Upload Sheet - Create Segmentation button</td>
-                      </tr>
-                      <tr>
-                        <td>7</td>
-                        <td>View Final Audit Summary</td>
-                        <td>Upload Sheet - View button after segmentation</td>
-                      </tr>
-                      <tr>
-                        <td>8</td>
-                        <td>Review dashboards</td>
-                        <td>Dashboard - GST / SWT / CIT</td>
-                      </tr>
-                      <tr>
-                        <td>9</td>
-                        <td>Perform risk analysis</td>
-                        <td>Analytics - Risk Assessment / Risk Profiling</td>
-                      </tr>
-                      <tr>
-                        <td>10</td>
-                        <td>Review flagged records</td>
-                        <td>Reports - Recent Uploads - View Reason</td>
-                      </tr>
-                      <tr>
-                        <td>11</td>
-                        <td>Generate taxpayer reports</td>
-                        <td>Reports - Taxpayer Profile / Risk Profiling</td>
-                      </tr>
-                      <tr>
-                        <td>12</td>
-                        <td>Export and share findings</td>
-                        <td>Dashboard / Reports - Download PDF / CSV / Excel</td>
-                      </tr>
-                      <tr>
-                        <td>13</td>
-                        <td>Verify upload log</td>
-                        <td>Upload History</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="help-section">
-                  <h2>11. Conclusion</h2>
-                  <p>
-                    The Tax Fraud Detection System provides a structured, ML-powered approach to identifying fraudulent
-                    tax submissions across GST, SWT, and CIT. By combining automated data validation, machine learning
-                    fraud detection, risk profiling, and geographic visualization, the system reduces manual review effort
-                    and improves detection accuracy.
-                  </p>
-                  <p>
-                    The complete workflow - Upload - Validate - Process - Segmentation - Dashboard Review - Risk Analysis
-                    - Report Export - ensures all data is verified, cleaned, and analyzed before findings are acted upon.
-                    For further assistance, contact your system administrator or navigate to Help Centre from the left sidebar.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </main>
-        </div>
-
-        <Footer />
-      </div>
-    </div>
-  );
+  return <div className="container-fluid help-center-shell"><div className="row"><Header toggleSidebar={() => setCollapsed(!collapsed)} /><div className="col-lg-12"><Sidebar collapsed={collapsed} setCollapsed={setCollapsed} openMenu={openMenu} setOpenMenu={setOpenMenu} /><main className="main-content mt-5 help-center-main"><div className="help-center-scroll"><div className="help-center-card">
+    <section className="manual-hero"><div className="manual-hero-copy"><span className="manual-kicker"><BookOpen size={16} /> RBA TOOL DOCUMENTATION</span><h1>RBA Tool User Manual</h1><p>One place to understand the application workflow, role-based access, tax modules, review screens and exports.</p><div className="manual-meta"><span>{MANUAL_VERSION}</span><span>{MANUAL_DATE}</span><span><ShieldCheck size={15} /> Authenticated users</span></div></div><button className="manual-download" onClick={downloadCompleteManual}><Download size={18} /> Download PDF</button></section>
+    <section className="manual-search-panel" aria-label="Search user manual"><div className="manual-search-label"><Search size={19} /><span>Search the user manual</span></div><div className="manual-search-row"><div className="manual-search-input"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Try upload, CSV, risk or taxpayer..." aria-label="Search the user manual" />{query && <button type="button" onClick={handleReset} aria-label="Clear search"><X size={17} /></button>}</div><button type="button" className="manual-reset" onClick={handleReset} disabled={!query}>Reset</button></div><div className="manual-search-hint">Searches titles, descriptions, instructions, keywords, troubleshooting and FAQs.</div></section>
+    <section className="manual-toc" aria-label="Table of contents"><div className="manual-section-heading"><FileText size={19} /><div><h2>Table of contents</h2><p>Jump to a major topic.</p></div></div><div className="manual-toc-grid">{helpSections.map((section, index) => <button type="button" key={section.id} onClick={() => scrollToSection(section.id)}><span>{String(index + 1).padStart(2, "0")}</span>{section.title}</button>)}</div></section>
+    <div className="manual-toolbar"><span>{query ? `${filteredSections.length} matching section${filteredSections.length === 1 ? "" : "s"}` : `${helpSections.length} manual sections`}</span><div><button type="button" onClick={() => setExpandedSections(new Set(filteredSections.map((section) => section.id)))}>Expand all</button><button type="button" onClick={() => setExpandedSections(new Set())}>Collapse all</button></div></div>
+    <div className="manual-sections">{filteredSections.length === 0 ? <div className="manual-empty"><Search size={28} /><h3>No matching help topics found.</h3><p>Try a broader keyword such as upload, dashboard, CSV or role.</p></div> : filteredSections.map((section) => { const sectionIndex = helpSections.findIndex((manualSection) => manualSection.id === section.id); return <section className={`manual-section ${expandedSections.has(section.id) ? "is-open" : ""}`} id={section.id} key={section.id}><button type="button" className="manual-section-toggle" onClick={() => toggleSection(section.id)} aria-expanded={expandedSections.has(section.id)}><span className="manual-section-number">{String(sectionIndex + 1).padStart(2, "0")}</span><span className="manual-section-title"><strong>{section.title}</strong><small>{section.summary}</small></span><ChevronDown size={21} /></button>{expandedSections.has(section.id) && <div className="manual-section-content">{section.items.map((item) => <ManualTopic item={item} isSearchMatch={Boolean(normalizedQuery && getSectionText(item).includes(normalizedQuery))} key={item.title} />)}</div>}</section>; })}</div>
+    <div className="manual-footer-note"><CheckCircle2 size={18} /><span>Keep this manual alongside your operational review procedure. The application and your assigned permissions determine the data and actions available in each session.</span></div>
+  </div></div></main></div><Footer /></div></div>;
 }
