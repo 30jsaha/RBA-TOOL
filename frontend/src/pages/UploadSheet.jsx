@@ -478,11 +478,27 @@ export default function UploadSheet() {
 
   // Cancel Preview Action - resets upload workflow without changing unrelated page state
   const handleCancelPreview = () => {
+    if (processing) return;
+
+    terminalRunIdRef.current = null;
+
+    if (validationCompletionTimeoutRef.current) {
+      window.clearTimeout(validationCompletionTimeoutRef.current);
+      validationCompletionTimeoutRef.current = null;
+    }
+
+    if (validationStepIntervalRef.current) {
+      window.clearInterval(validationStepIntervalRef.current);
+      validationStepIntervalRef.current = null;
+    }
+
     setFile(null);
     setPreviewRows([]);
     setUploadResponse(null);
     setError("");
     setInfo("");
+    setPipelineState(createInitialPipelineState());
+    setConflictCount(null);
     setPageState("INITIAL");
     setIsPreviewExpanded(true);
     if (fileInputRef.current) {
@@ -1338,7 +1354,16 @@ export default function UploadSheet() {
 
                   {/* Final Process Button */}
                   {showValidationSummary && uploadResponse && (
-                    <div className="d-flex justify-content-end mt-3">
+                    <div className="d-flex justify-content-end gap-2 mt-3">
+                      <Button
+                        variant="outlined"
+                        color="inherit"
+                        onClick={handleCancelPreview}
+                        disabled={controlsDisabled}
+                      >
+                        CANCEL
+                      </Button>
+
                       <Button
                         variant="contained"
                         color="primary"
