@@ -370,8 +370,6 @@ export default function TaxpayerProfile() {
   ];
 
   const visiblePages = getVisiblePages();
-  const showingStart = totalRecords === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
-  const showingEnd = totalRecords === 0 ? 0 : Math.min(currentPage * PAGE_SIZE, totalRecords);
 
   const reasonDialogTitle = useMemo(() => {
     return fraudReasonTin ? `Fraud Reason Details - ${fraudReasonTin}` : "Fraud Reason Details";
@@ -393,9 +391,23 @@ export default function TaxpayerProfile() {
       }));
   }, [selectedTaxpayer]);
 
-  const tableRecords = taxType === "gst"
-    ? aggregateGstRecordsByTin(riskRecords)
-    : riskRecords;
+  const tableRecords = useMemo(() => (
+    taxType === "gst" ? aggregateGstRecordsByTin(riskRecords) : riskRecords
+  ), [riskRecords, taxType]);
+  const filteredTableRecords = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return tableRecords;
+
+    return tableRecords.filter((record) =>
+      Object.values(record || {}).some((value) =>
+        String(value ?? "").toLowerCase().includes(query)
+      )
+    );
+  }, [searchTerm, tableRecords]);
+  const searchActive = Boolean(searchTerm.trim());
+  const effectiveTotalRecords = searchActive ? filteredTableRecords.length : totalRecords;
+  const showingStart = effectiveTotalRecords === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const showingEnd = effectiveTotalRecords === 0 ? 0 : Math.min(currentPage * PAGE_SIZE, effectiveTotalRecords);
 
   return (
     <div className="container-fluid">
@@ -511,9 +523,9 @@ export default function TaxpayerProfile() {
 
               <div className="card taxpayer-profile-table">
                 <div className="card-header fw-bold d-flex justify-content-between align-items-center">
-                  <span>Risk Profiling Summary ({totalRecords.toLocaleString()})</span>
+                  <span>Risk Profiling Summary ({effectiveTotalRecords.toLocaleString()})</span>
                   <span className="small text-muted">
-                    Showing {showingStart.toLocaleString()}-{showingEnd.toLocaleString()} of {totalRecords.toLocaleString()} records
+                    Showing {showingStart.toLocaleString()}-{showingEnd.toLocaleString()} of {effectiveTotalRecords.toLocaleString()} records
                   </span>
                 </div>
 
@@ -522,7 +534,7 @@ export default function TaxpayerProfile() {
 
                   <DataTable
                     columns={columns}
-                    data={tableRecords}
+                    data={filteredTableRecords}
                     keyField="row_key"
                     highlightOnHover
                     dense
@@ -567,7 +579,7 @@ export default function TaxpayerProfile() {
 
                   <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3">
                     <div className="small text-muted">
-                      Showing {showingStart.toLocaleString()}-{showingEnd.toLocaleString()} of {totalRecords.toLocaleString()} records
+                      Showing {showingStart.toLocaleString()}-{showingEnd.toLocaleString()} of {effectiveTotalRecords.toLocaleString()} records
                     </div>
 
                     <div
