@@ -1,6 +1,7 @@
 # gst_validator.py
 import pandas as pd
 import logging
+from datetime import datetime
 from collections import defaultdict
 from utils.auth_helper import get_authenticated_user_id
 
@@ -1275,6 +1276,15 @@ def validate_and_clean_gst_data(df, allowed_taxpayer_types={"individual", "enter
                                             to_ins = to_ins.loc[~unresolved_mask].copy()
 
                                     if not to_ins.empty:
+                                        # Supply valid timestamp values explicitly.  The
+                                        # client schema requires these columns to be
+                                        # non-null, and pandas.to_sql() otherwise sends
+                                        # NULL for schema columns added above.
+                                        conflict_now = datetime.utcnow()
+                                        if "created_at" in conf_cols:
+                                            to_ins["created_at"] = conflict_now
+                                        if "updated_at" in conf_cols:
+                                            to_ins["updated_at"] = conflict_now
                                         to_ins = to_ins[conf_cols]
                                         with engine2.begin() as conn:
                                             to_ins.to_sql("upload_conflicts", con=conn, if_exists="append", index=False)

@@ -231,7 +231,7 @@ def _try_insert_validation_errors(engine, upload_validation_summary_id, upload_h
                     """
                     INSERT INTO upload_validation_errors
                         (upload_validation_summary_id, upload_history_id, user_id, file_type,
-                         row_number, tin, column_name, reason, created_at)
+                         `row_number`, tin, column_name, reason, created_at)
                     VALUES
                         (:upload_validation_summary_id, :upload_history_id, :user_id, :file_type,
                          :row_number, :tin, :column_name, :reason, NOW())
@@ -253,7 +253,7 @@ def _try_fetch_validation_errors(engine, upload_validation_summary_id):
             res = conn.execute(
                 text(
                     """
-                    SELECT row_number, tin, column_name, reason
+                    SELECT `row_number`, tin, column_name, reason
                     FROM upload_validation_errors
                     WHERE upload_validation_summary_id = :upload_validation_summary_id
                     ORDER BY id ASC
@@ -1615,6 +1615,11 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                                                 except Exception:
                                                     pass
 
+                                                conflict_now = datetime.utcnow()
+                                                if "created_at" in conf_cols:
+                                                    to_ins["created_at"] = conflict_now
+                                                if "updated_at" in conf_cols:
+                                                    to_ins["updated_at"] = conflict_now
                                                 to_ins = to_ins[conf_cols]
                                                 with engine2.begin() as conn:
                                                     to_ins.to_sql("upload_conflicts", con=conn, if_exists="append", index=False)
@@ -1624,8 +1629,8 @@ def run_swt_preprocessing(saved_path, on_step=None, make_timestamped_copies=Fals
                                                         engine2.dispose()
                                                 except Exception:
                                                     pass
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    print(f"[SWT_CONFLICT_INSERT_ERROR] {type(e).__name__}: {e}")
                             print("[SWT FINANCIAL DIFF]")
                             print("difference_count =", int(db_financial_differences_count))
                             print("difference_fields =", int(db_financial_difference_fields_count))

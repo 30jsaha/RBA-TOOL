@@ -2238,6 +2238,11 @@ def _run_cit_validation(output_dir_override=None):
                                                 except Exception:
                                                     pass
 
+                                                conflict_now = datetime.utcnow()
+                                                if "created_at" in conf_cols:
+                                                    to_ins["created_at"] = conflict_now
+                                                if "updated_at" in conf_cols:
+                                                    to_ins["updated_at"] = conflict_now
                                                 to_ins = to_ins[conf_cols]
                                                 with engine2.begin() as conn:
                                                     to_ins.to_sql("upload_conflicts", con=conn, if_exists="append", index=False)
@@ -2247,8 +2252,8 @@ def _run_cit_validation(output_dir_override=None):
                                                         engine2.dispose()
                                                 except Exception:
                                                     pass
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    print(f"[CIT_CONFLICT_INSERT_ERROR] {type(e).__name__}: {e}")
 
                                 # Append removed rows (drop db helper cols)
                                 drop_db_cols = [c for c in removed_rows.columns if c.endswith('__db') or c in ['_merge', '_upload_row_id', '_db_key']]
