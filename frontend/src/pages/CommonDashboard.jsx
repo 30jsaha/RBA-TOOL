@@ -6,7 +6,7 @@ import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
-import { formatKinaAxisValue } from "../utils/apexChartFormatters";
+import { formatKinaAxisValue, formatKinaFullValue } from "../utils/apexChartFormatters";
 import DataTable from "react-data-table-component";
 import {
   MenuItem,
@@ -617,7 +617,7 @@ export default function CommonDashboard() {
   const hasRiskExposureData = useMemo(() => asArray(riskExposure).length > 0, [riskExposure]);
   const toggleChartView = (key) => setChartView((current) => ({ ...current, [key]: !current[key] }));
   const taxFlowTableData = useMemo(() => asArray(taxFlow.categories).map((category, index) => ({ id: `${category}-${index}`, period: category, ...Object.fromEntries(asArray(taxFlow.series).map((series, seriesIndex) => [`series_${seriesIndex}`, num(series?.data?.[index])])) })), [taxFlow]);
-  const taxFlowTableColumns = useMemo(() => [{ name: "Period", selector: (row) => row.period, sortable: true }, ...asArray(taxFlow.series).map((series, index) => ({ name: series?.name || `Series ${index + 1}`, selector: (row) => row[`series_${index}`], sortable: true, right: true, format: (row) => row[`series_${index}`].toLocaleString() }))], [taxFlow]);
+  const taxFlowTableColumns = useMemo(() => [{ name: "Period", selector: (row) => row.period, sortable: true }, ...asArray(taxFlow.series).map((series, index) => ({ name: series?.name || `Series ${index + 1}`, selector: (row) => row[`series_${index}`], sortable: true, right: true, format: (row) => formatKinaFullValue(row[`series_${index}`]) }))], [taxFlow]);
   const fraudTrendColumns = useMemo(() => [{ name: "Year", selector: (row) => row.year, sortable: true }, { name: "Fraud Cases", selector: (row) => num(row?.fraud_cases ?? row?.fraudCases ?? row?.count), sortable: true, right: true }], []);
   const riskExposureColumns = useMemo(() => [{ name: "Risk Status", selector: (row) => row?.predicted_fraud ?? "Unknown", sortable: true }, { name: "Taxpayers", selector: (row) => num(row?.taxpayers), sortable: true, right: true }], []);
   const hasOverviewData = useMemo(
@@ -640,9 +640,27 @@ export default function CommonDashboard() {
   const taxFlowOptions = useMemo(() => ({
     chart: { type: "line", height: 350 },
     stroke: { curve: "smooth", width: 3 },
+    plotOptions: {
+      bar: {
+        columnWidth: "55%",
+        dataLabels: { position: "center" },
+      },
+    },
     xaxis: { categories: taxFlowCategories ?? [] },
     yaxis: { labels: { formatter: formatKinaAxisValue } },
-    tooltip: { shared: true, intersect: false },
+    dataLabels: {
+      enabled: true,
+      formatter: (value) => (Number(value) === 0 ? "" : formatKinaAxisValue(value)),
+      offsetY: 0,
+      textAnchor: "middle",
+      style: {
+        fontSize: "10px",
+        fontWeight: 600,
+        colors: ["#fff"],
+      },
+    },
+    grid: { padding: { top: 18, right: 12, bottom: 16, left: 12 } },
+    tooltip: { shared: true, intersect: false, y: { formatter: formatKinaFullValue } },
     colors: ["#1E88E5", "#2ECC71", "#F39C12"],
   }), [taxFlowCategories]);
 
@@ -657,6 +675,9 @@ export default function CommonDashboard() {
         barHeight: "60%",
       },
     },
+    dataLabels: {
+      formatter: formatKinaAxisValue,
+    },
     xaxis: {
       categories: asArray(sectorData).map((s) =>
         (s.sector || "Unknown").slice(0, 30)
@@ -667,7 +688,7 @@ export default function CommonDashboard() {
     },
     tooltip: {
       y: {
-        formatter: (val) => "K " + Number(val).toLocaleString(),
+        formatter: formatKinaFullValue,
       },
     },
   }), [sectorData]);
@@ -682,16 +703,16 @@ export default function CommonDashboard() {
 
   const sectorColumns = useMemo(() => [
     { name: "Sector", selector: (r) => r.sector || "Unknown" },
-    { name: "Income", selector: (r) => Number(r.income).toLocaleString() },
-    { name: "Tax", selector: (r) => Number(r.tax).toLocaleString() },
+    { name: "Income", selector: (r) => Number(r.income).toLocaleString(), format: (r) => formatKinaFullValue(r.income) },
+    { name: "Tax", selector: (r) => Number(r.tax).toLocaleString(), format: (r) => formatKinaFullValue(r.tax) },
     { name: "Taxpayers", selector: (r) => r.taxpayers },
   ], []);
 
   const topTinColumns = useMemo(() => [
     { name: "TIN", selector: (r) => r.tin },
     { name: "Taxpayer", selector: (r) => r.taxpayer },
-    { name: "Income", selector: (r) => r.income },
-    { name: "Tax", selector: (r) => r.tax },
+    { name: "Income", selector: (r) => r.income, format: (r) => formatKinaFullValue(r.income) },
+    { name: "Tax", selector: (r) => r.tax, format: (r) => formatKinaFullValue(r.tax) },
   ], []);
 
   /* ================= TABLE ================= */
@@ -701,10 +722,10 @@ export default function CommonDashboard() {
     { name: "Year", selector: (r) => str(r.tax_period_year, "") },
     { name: "Account", selector: (r) => str(r.tax_account_number, "") },
     { name: "Assessment", selector: (r) => str(r.assessment_number, "") },
-    { name: "CIT Gross Income", selector: (r) => num(r.cit_total_gross_income) },
-    { name: "CIT Tax Payable", selector: (r) => num(r.cit_total_tax_payable) },
-    { name: "GST Sales Difference", selector: (r) => num(r.gst_vs_cit_sales_diff_abs) },
-    { name: "SWT Salary Difference", selector: (r) => num(r.swt_vs_cit_salary_diff_abs) },
+    { name: "CIT Gross Income", selector: (r) => num(r.cit_total_gross_income), format: (r) => formatKinaFullValue(r.cit_total_gross_income) },
+    { name: "CIT Tax Payable", selector: (r) => num(r.cit_total_tax_payable), format: (r) => formatKinaFullValue(r.cit_total_tax_payable) },
+    { name: "GST Sales Difference", selector: (r) => num(r.gst_vs_cit_sales_diff_abs), format: (r) => formatKinaFullValue(r.gst_vs_cit_sales_diff_abs) },
+    { name: "SWT Salary Difference", selector: (r) => num(r.swt_vs_cit_salary_diff_abs), format: (r) => formatKinaFullValue(r.swt_vs_cit_salary_diff_abs) },
     { name: "Sector", selector: (r) => str(r.sector_activity) },
     { name: "Multi-Tax Issue", selector: (r) => str(r.multi_tax_issue) },
   ], []);

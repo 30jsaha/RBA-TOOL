@@ -29,7 +29,7 @@ import EmptyState from "../components/common/EmptyState";
 import TableSkeleton from "../components/common/TableSkeleton";
 import ChartDataCard from "../components/common/ChartDataCard";
 import API from "../api/api";
-import { formatKinaAxisValue } from "../utils/apexChartFormatters";
+import { formatKinaAxisValue, formatKinaFullValue } from "../utils/apexChartFormatters";
 import "./css/Dashboard.css";
 
 const PNGMapGST = lazy(() => import("../components/maps/PNGMapGST"));
@@ -123,17 +123,6 @@ const getSeriesTableColumns = (categoryLabel, series = [], formatValue) => [
     format: (row) => formatValue(row[`series_${index}`]),
   })),
 ];
-
-const formatCurrency = (value) => {
-  if (value === null || value === undefined) {
-    return "K 0.00";
-  }
-
-  return `K ${Number(value).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-};
 
 const makeCacheKey = (url, params) => `${url}:${JSON.stringify(params || {})}`;
 
@@ -480,7 +469,7 @@ export default function Dashboard() {
     },
     tooltip: {
       y: {
-        formatter: (value) => formatCurrency(value),
+        formatter: formatKinaFullValue,
       },
     },
   }), [salesChart.categories, salesInteractionToolbar]);
@@ -683,7 +672,7 @@ export default function Dashboard() {
   const hasRiskData = hasLabeledSeriesData(riskChart.labels, riskChart.series);
 
   const salesTableColumns = useMemo(
-    () => getSeriesTableColumns("Month", salesChart.series, formatCurrency),
+    () => getSeriesTableColumns("Month", salesChart.series, formatKinaFullValue),
     [salesChart.series]
   );
   const salesTableData = useMemo(
@@ -701,7 +690,7 @@ export default function Dashboard() {
     [gstChart.series]
   );
   const gstTableColumns = useMemo(
-    () => getSeriesTableColumns("Month", gstSeries, formatCurrency),
+    () => getSeriesTableColumns("Month", gstSeries, formatKinaFullValue),
     [gstSeries]
   );
   const gstTableData = useMemo(
@@ -917,17 +906,17 @@ export default function Dashboard() {
                     {
                       color: "#47C99E",
                       title: "Total Sales Income",
-                      value: formatCurrency(summary.total_sales_income),
+                      value: formatKinaFullValue(summary.total_sales_income),
                     },
                     {
                       color: "#F96992",
                       title: "Total GST Payable",
-                      value: formatCurrency(summary.total_gst_payable),
+                      value: formatKinaFullValue(summary.total_gst_payable),
                     },
                     {
                       color: "#FFA56D",
                       title: "Total GST Refundable",
-                      value: formatCurrency(summary.total_gst_refundable),
+                      value: formatKinaFullValue(summary.total_gst_refundable),
                     },
                   ].map((item, index) => (
                     <div key={index} className="col-lg-3 col-md-6 mb-3">
@@ -978,12 +967,26 @@ export default function Dashboard() {
                                         horizontal: false,
                                         columnWidth: "55%",
                                         borderRadius: 4,
+                                        dataLabels: {
+                                          position: "center",
+                                        },
                                       },
                                     }
                                   : {},
                                 stroke: isLargeDashboardRange ? { width: 0 } : { curve: "smooth" },
+                                grid: isLargeDashboardRange
+                                  ? { padding: { top: 18, right: 12, bottom: 16, left: 12 } }
+                                  : {},
                                 dataLabels: {
                                   enabled: isLargeDashboardRange,
+                                  formatter: (value) => (Number(value) === 0 ? "" : formatKinaAxisValue(value)),
+                                  offsetY: 0,
+                                  textAnchor: "middle",
+                                  style: {
+                                    fontSize: "10px",
+                                    fontWeight: 600,
+                                    colors: ["#fff"],
+                                  },
                                 },
                               }}
                               series={salesChart.series}
@@ -1041,6 +1044,7 @@ export default function Dashboard() {
                                 },
                                 dataLabels: {
                                   enabled: false,
+                                  formatter: formatKinaAxisValue,
                                 },
                                 xaxis: {
                                   categories: gstChart.categories,
@@ -1055,7 +1059,7 @@ export default function Dashboard() {
                                   shared: true,
                                   intersect: false,
                                   y: {
-                                    formatter: (value) => formatCurrency(value),
+                                    formatter: formatKinaFullValue,
                                   },
                                 },
                                 yaxis: {

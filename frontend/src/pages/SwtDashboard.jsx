@@ -23,7 +23,7 @@ import {
   Box
 } from "@mui/material";
 import dayjs from "dayjs";
-import { formatKinaAxisValue } from "../utils/apexChartFormatters";
+import { formatKinaAxisValue, formatKinaFullValue } from "../utils/apexChartFormatters";
 import "./css/Dashboard.css";
 import tableCustomStyles from "../components/common/tableStyles";
 import EmptyState from "../components/common/EmptyState";
@@ -166,8 +166,6 @@ export default function SwtDashboard() {
 
   const normalize = useCallback((s) =>
     (s || "").trim().toLowerCase().replace(/[^a-z]/g, ""), []);
-
-  const formatCurrency = useCallback((value) => `K ${Number(value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, []);
 
   const getParams = useCallback(() => {
     const params = { range_type: appliedFilters.tenure };
@@ -675,7 +673,7 @@ export default function SwtDashboard() {
     shared: true,
     intersect: false,
     y: {
-      formatter: (value) => `K ${Number(value ?? 0).toLocaleString()}`,
+      formatter: formatKinaFullValue,
     },
   },
   legend: {
@@ -744,8 +742,8 @@ export default function SwtDashboard() {
     { name: "TIN", selector: (row) => str(row?.tin ?? row?.tin_number ?? row?.tinNumber, ""), sortable: true },
     { name: "Employer", selector: (row) => str(row?.taxpayer_name ?? row?.taxpayer ?? row?.name), wrap: true },
     { name: "Segmentation", selector: (row) => str(row?.segmentation, "-"), sortable: true },
-    { name: "Salary", selector: (row) => num(row?.salary ?? row?.total_salary_wages_paid ?? row?.salary_wages_paid), sortable: true },
-    { name: "SWT Deducted", selector: (row) => num(row?.swt_tax ?? row?.total_swt_tax_deducted ?? row?.swt_deducted), sortable: true },
+    { name: "Salary", selector: (row) => num(row?.salary ?? row?.total_salary_wages_paid ?? row?.salary_wages_paid), sortable: true, format: (row) => formatKinaFullValue(row?.salary ?? row?.total_salary_wages_paid ?? row?.salary_wages_paid) },
+    { name: "SWT Deducted", selector: (row) => num(row?.swt_tax ?? row?.total_swt_tax_deducted ?? row?.swt_deducted), sortable: true, format: (row) => formatKinaFullValue(row?.swt_tax ?? row?.total_swt_tax_deducted ?? row?.swt_deducted) },
     { name: "Period", selector: (row) => str(row?.period ?? row?.month ?? row?.tax_period, ""), sortable: true },
   ], []);
 
@@ -758,10 +756,10 @@ export default function SwtDashboard() {
 
   const summaryCards = useMemo(() => ([
     { color: "#5096FF", title: "Total Employers", value: num(summary.total_employers ?? summary.total_tax_payers ?? summary.total_employer) },
-    { color: "#47C99E", title: "Total Wages Paid", value: formatCurrency(summary.total_salary_wages_paid ?? summary.total_wages_paid ?? summary.total_salary) },
-    { color: "#F96992", title: "Total SWT Deducted", value: formatCurrency(summary.total_swt_tax_deducted ?? summary.total_swt_deducted ?? summary.swt_tax) },
+    { color: "#47C99E", title: "Total Wages Paid", value: formatKinaFullValue(summary.total_salary_wages_paid ?? summary.total_wages_paid ?? summary.total_salary) },
+    { color: "#F96992", title: "Total SWT Deducted", value: formatKinaFullValue(summary.total_swt_tax_deducted ?? summary.total_swt_deducted ?? summary.swt_tax) },
     { color: "#FFA56D", title: "Effective SWT Rate", value: `${(num(summary.effective_rate ?? summary.effectiveRate) * 100).toFixed(2)}%` },
-  ]), [formatCurrency, summary]);
+  ]), [summary]);
 
   const buildSeriesRows = (categories, series) => asArray(categories).map((category, rowIndex) => {
     const row = { id: `${category}-${rowIndex}`, category: str(category) };
@@ -787,7 +785,7 @@ export default function SwtDashboard() {
     segment: str(label),
     count: Number(segmentation.series?.[index] ?? 0),
   }));
-  const salaryTableColumns = buildSeriesColumns("Month", swtSalaryChart.series, formatCurrency);
+  const salaryTableColumns = buildSeriesColumns("Month", swtSalaryChart.series, formatKinaFullValue);
   const fraudTableColumns = buildSeriesColumns("Month", fraudChart.series);
   const segmentationTableColumns = [
     { name: "Segment", selector: (row) => row.segment, sortable: true, wrap: true },

@@ -3,6 +3,7 @@ import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
+import { formatKinaFullValue } from "../utils/apexChartFormatters";
 import DataTable from "react-data-table-component";
 import {
   MenuItem,
@@ -571,7 +572,7 @@ export default function RiskAssessment() {
     { name: "Taxpayer Name", selector: (r) => r.taxpayer_name || "-", sortable: true },
     {
       name: "Total Sales (K)",
-      selector: (r) => (r.total_sales ? r.total_sales.toLocaleString() : "0"),
+      selector: (r) => (r.total_sales ? formatKinaFullValue(r.total_sales) : "K 0"),
       sortable: true,
       right: true,
     },

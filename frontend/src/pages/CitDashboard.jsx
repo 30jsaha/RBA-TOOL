@@ -6,6 +6,7 @@ import Header from "../components/layout/Header";
 import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
+import { formatKinaFullValue } from "../utils/apexChartFormatters";
 import DataTable from "react-data-table-component";
 import {
   FormControl,
@@ -782,24 +783,24 @@ export default function CitDashboard() {
   const profitCols = useMemo(() => ([
     { name: "TIN", selector: r => r.tin, sortable: true },
     { name: "Taxpayer", selector: r => r.taxpayer, wrap: true },
-    { name: "Net Profit (K)", selector: r => num(r?.net_profit ?? r?.netProfit).toLocaleString(), sortable: true },
+    { name: "Net Profit (K)", selector: r => formatKinaFullValue(r?.net_profit ?? r?.netProfit), sortable: true },
   ]), []);
 
   const lossCols = useMemo(() => ([
     { name: "TIN", selector: r => r.tin, sortable: true },
     { name: "Taxpayer", selector: r => r.taxpayer, wrap: true },
-    { name: "Net Loss (K)", selector: r => num(r?.net_loss ?? r?.netLoss).toLocaleString(), sortable: true },
+    { name: "Net Loss (K)", selector: r => formatKinaFullValue(r?.net_loss ?? r?.netLoss), sortable: true },
   ]), []);
 
   const simpleCols = useMemo(() => ([
     { name: "Type", selector: r => str(r?.type) },
-    { name: "Amount (K)", selector: r => num(r?.amount).toLocaleString() },
+    { name: "Amount (K)", selector: r => formatKinaFullValue(r?.amount) },
   ]), []);
 
   const salesCols = useMemo(() => ([
     { name: "Period", selector: r => str(r?.period, "") },
-    { name: "Gross Sales", selector: r => num(r?.sales).toLocaleString() },
-    { name: "COGS", selector: r => num(r?.cogs).toLocaleString() },
+    { name: "Gross Sales", selector: r => formatKinaFullValue(r?.sales) },
+    { name: "COGS", selector: r => formatKinaFullValue(r?.cogs) },
     {
       name: "Sales vs COGS %",
       selector: r => {
@@ -827,8 +828,8 @@ export default function CitDashboard() {
   const salesDetailsCols = useMemo(() => ([
     { name: "TIN", selector: r => r.tin, wrap: true },
     { name: "Taxpayer Name", selector: r => r.taxpayer_name, wrap: true },
-    { name: "Gross Sales", selector: r => Number(r.gross_sales || 0).toLocaleString() },
-    { name: "COGS", selector: r => Number(r.cogs || 0).toLocaleString() },
+    { name: "Gross Sales", selector: r => formatKinaFullValue(r.gross_sales) },
+    { name: "COGS", selector: r => formatKinaFullValue(r.cogs) },
     {
       name: "COGS %",
       selector: r => {
@@ -844,10 +845,10 @@ export default function CitDashboard() {
     { name: "TIN", selector: (r) => str(r?.tin, ""), sortable: true, wrap: true },
     { name: "Taxpayer", selector: (r) => str(r?.taxpayer_name, ""), sortable: true, wrap: true },
     { name: "Year", selector: (r) => str(r?.tax_period_year, ""), sortable: true },
-    { name: "Gross Income", selector: (r) => num(r?.gross_income).toLocaleString(), sortable: true },
-    { name: "Gross Sales", selector: (r) => num(r?.gross_sales).toLocaleString(), sortable: true },
-    { name: "COGS", selector: (r) => num(r?.cogs).toLocaleString(), sortable: true },
-    { name: "Net Profit", selector: (r) => num(r?.net_profit).toLocaleString(), sortable: true },
+    { name: "Gross Income", selector: (r) => formatKinaFullValue(r?.gross_income), sortable: true },
+    { name: "Gross Sales", selector: (r) => formatKinaFullValue(r?.gross_sales), sortable: true },
+    { name: "COGS", selector: (r) => formatKinaFullValue(r?.cogs), sortable: true },
+    { name: "Net Profit", selector: (r) => formatKinaFullValue(r?.net_profit), sortable: true },
     { name: "Fraud Status", selector: (r) => str(r?.predicted_fraud, "Unknown"), sortable: true, wrap: true },
   ]), []);
 

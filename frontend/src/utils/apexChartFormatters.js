@@ -29,3 +29,17 @@ export const formatKinaAxisValue = (value) => {
 
   return `K ${formattedValue}`;
 };
+
+/** Formats monetary values with the full Kina amount for tooltips and tables. */
+export const formatKinaFullValue = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "";
+  }
+
+  return `K ${numericValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+};

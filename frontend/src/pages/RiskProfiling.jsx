@@ -4,7 +4,7 @@ import Sidebar from "../components/layout/Sidebar";
 import Footer from "../components/layout/Footer";
 import Chart from "react-apexcharts";
 import DataTable from "react-data-table-component";
-import { formatKinaAxisValue } from "../utils/apexChartFormatters";
+import { formatKinaAxisValue, formatKinaFullValue } from "../utils/apexChartFormatters";
 import {
   MenuItem,
   Select,
@@ -289,22 +289,25 @@ const getParams = () => {
       bar: {
         borderRadius: 6,
         dataLabels: {
-          position: "top", // label on top of each bar
+          position: "center",
         },
       },
     },
     dataLabels: {
       enabled: true,
-      formatter: (val) => (val ? val.toLocaleString() : ""),
-      offsetY: -15,
+      formatter: (value) => (Number(value) === 0 ? "" : formatKinaAxisValue(value)),
+      offsetY: 0,
+      textAnchor: "middle",
       style: {
-        fontSize: "9px",
-        colors: ["#000"], // black text
-        fontWeight: "500",
+        fontSize: "10px",
+        colors: ["#fff"],
+        fontWeight: 600,
       },
     },
     xaxis: { categories: ["Payable", "Refundable"], title: { text: "Industry" } },
     yaxis: { labels: { formatter: formatKinaAxisValue } },
+    tooltip: { y: { formatter: formatKinaFullValue } },
+    grid: { padding: { top: 18, right: 12, bottom: 16, left: 12 } },
     title: { text: `Selected Industry: ${selectedIndustry}`, style: { fontWeight: "bold" } },
     colors: ["#16A085", "#E67E22"],
     legend: { position: "top" },
@@ -317,22 +320,25 @@ const getParams = () => {
       bar: {
         borderRadius: 6,
         dataLabels: {
-          position: "top",
+          position: "center",
         },
       },
     },
     dataLabels: {
       enabled: true,
-      formatter: (val) => (val ? val.toLocaleString() : ""),
-      offsetY: -15,
+      formatter: (value) => (Number(value) === 0 ? "" : formatKinaAxisValue(value)),
+      offsetY: 0,
+      textAnchor: "middle",
       style: {
-        fontSize: "9px",
-        colors: ["#000"],
-        fontWeight: "500",
+        fontSize: "10px",
+        colors: ["#fff"],
+        fontWeight: 600,
       },
     },
     xaxis: { categories: ["Input Credits", "Output Debits"], title: { text: "Industry" } },
     yaxis: { labels: { formatter: formatKinaAxisValue } },
+    tooltip: { y: { formatter: formatKinaFullValue } },
+    grid: { padding: { top: 18, right: 12, bottom: 16, left: 12 } },
     title: { text: `Selected Industry: ${selectedIndustry}`, style: { fontWeight: "bold" } },
     colors: ["#2980B9", "#C0392B"],
     legend: { position: "top" },
@@ -572,8 +578,8 @@ const getParams = () => {
                         <TableRow key={i}>
                           <TableCell>{row.industry}</TableCell>
                           <TableCell>{row.year}</TableCell>
-                          <TableCell>{row.total_sales_income?.toLocaleString()}</TableCell>
-                          <TableCell>{row.gst_taxable_sales?.toLocaleString()}</TableCell>
+                          <TableCell>{formatKinaFullValue(row.total_sales_income)}</TableCell>
+                          <TableCell>{formatKinaFullValue(row.gst_taxable_sales)}</TableCell>
                           <TableCell>{row.taxpayers}</TableCell>
                         </TableRow>
                       ))}
