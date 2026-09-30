@@ -17,10 +17,6 @@ import {
   DialogContent,
   DialogTitle,
   DialogActions,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
   Skeleton,
   IconButton,
   Collapse,
@@ -124,7 +120,7 @@ export default function UploadSheet() {
   // 'SEGMENTATION_IDLE' | 'SEGMENTATION_RUNNING' | 'SEGMENTATION_COMPLETED' | 'SEGMENTATION_FAILED'
   const [segmentationState, setSegmentationState] = useState("SEGMENTATION_IDLE");
   const [isSegmentationModalOpen, setIsSegmentationModalOpen] = useState(false);
-  const [segTaxType, setSegTaxType] = useState("GST");
+  const segTaxType = "GST";
   const [segStartDate, setSegStartDate] = useState(null);
   const [segEndDate, setSegEndDate] = useState(null);
   const [segDateError, setSegDateError] = useState("");
@@ -1553,25 +1549,11 @@ export default function UploadSheet() {
                   {segmentationState === "SEGMENTATION_IDLE" && !segmentationValidationError && (
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5, pt: 1 }}>
                       <Typography variant="body2" color="text.secondary">
-                        Select the tax parameter and assessment period to generate the segmentation.
+                        Select the assessment period to generate the segmentation.
                       </Typography>
 
-                      <FormControl fullWidth size="small">
-                        <InputLabel id="seg-tax-label">Tax Parameter</InputLabel>
-                        <Select
-                          labelId="seg-tax-label"
-                          value={segTaxType}
-                          label="Tax Parameter"
-                          onChange={(e) => setSegTaxType(e.target.value)}
-                        >
-                          <MenuItem value="GST">GST</MenuItem>
-                          <MenuItem value="SWT">SWT</MenuItem>
-                          <MenuItem value="CIT">CIT</MenuItem>
-                        </Select>
-                      </FormControl>
-
                       <LocalizationProvider dateAdapter={AdapterDayjs}>
-                        <Box sx={{ display: "flex", gap: 2, flexDirection: { xs: "column", sm: "row" } }}>
+                        <Box sx={{ display: "flex", gap: 2.5, flexDirection: { xs: "column", sm: "row" } }}>
                           <Box sx={{ flex: 1 }}>
                             <label className="form-label fw-semibold small">Assessment Date: From</label>
                             <DatePicker
