@@ -93,7 +93,10 @@ export default function UploadHistory() {
     },
     {
       name: "File Size",
-      selector: (row) => (row.file_size_mb !== undefined && row.file_size_mb !== null ? `${row.file_size_mb} MB` : "-"),
+      selector: (row) =>
+        row.file_size_kb !== undefined && row.file_size_kb !== null
+          ? `${Number(row.file_size_kb).toFixed(2)} KB`
+          : "-",
       sortable: true,
     },
     { name: "Uploaded By", selector: (row) => row.uploaded_by, sortable: true },
