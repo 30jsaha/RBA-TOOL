@@ -33,6 +33,7 @@ def reset_db():
         "multitax_dashboard_summary",
         "multitax_dashboard_summary_status",
         "segmentation_tbl",
+        "taxpayer_segmentation_master",
     ]
 
     reset_engine = None
