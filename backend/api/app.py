@@ -118,6 +118,7 @@ from api.routes.user_management import bp as user_management_bp
 from api.routes.role_management import bp as role_management_bp
 from api.routes.conflicts_api import bp as conflicts_admin_bp
 from api.routes.tin_master import bp as tin_master_bp
+from api.routes.invalid_tins import bp as invalid_tins_bp
 
 from api.routes.steps_routes    import steps_bp
 from api.routes.validate_routes import validate_bp
@@ -163,6 +164,7 @@ app.register_blueprint(user_management_bp)
 app.register_blueprint(role_management_bp)
 app.register_blueprint(conflicts_admin_bp)
 app.register_blueprint(tin_master_bp)
+app.register_blueprint(invalid_tins_bp)
 app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
 # â”€â”€ Serve static outputs (CORS Preflight target)
