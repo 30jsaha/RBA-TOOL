@@ -34,6 +34,9 @@ def reset_db():
         "multitax_dashboard_summary_status",
         "segmentation_tbl",
         "taxpayer_segmentation_master",
+        "invalid_tins",
+        "fraud_business_decisions",
+        "fraud_business_decision_jobs",
     ]
 
     reset_engine = None

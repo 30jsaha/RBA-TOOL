@@ -27,6 +27,7 @@ from utils.bulk_insert_utils import (
 from utils.pipeline_logger import log_step
 from utils.database_locks import financial_data_lock
 from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
+from business_decisions.integration import insert_with_business_decisions
 
 
 def save_cit_justification_to_db(
@@ -122,13 +123,15 @@ def save_cit_justification_to_db(
         # Keep reset/refresh from overlapping a multi-chunk insert. Without
         # this, a reset can finish and this worker can append rows afterwards.
         with financial_data_lock(engine, timeout_seconds=30):
-            inserted_rows = chunked_multi_insert(
+            inserted_rows = insert_with_business_decisions(
                 df_to_insert,
                 table_name,
+                'CIT',
                 engine,
-                table_already_exists=db_table_exists,
                 chunksize=DEFAULT_INSERT_CHUNK_SIZE,
                 progress_callback=_on_chunk,
+                run_id=run_id,
+                user_id=user_id,
             )
 
         if not db_table_exists:

@@ -15,7 +15,10 @@ PATH_PERMISSION_RULES = [
     ("/api/admin/reset-db", ("settings.reset_db",)),
     ("/api/admin/cleanup-temp-files", ("settings.reset_db",)),
     ("/api/users", ("settings.users",)),
+    ("/api/invalid-tins/business-decisions", ("business_decisions.view",)),
+    ("/api/invalid-tins/jobs", ("business_decisions.jobs",)),
     ("/api/invalid-tins", ("settings.invalid_tins",)),
+    ("/api/invalid-tins/", ("settings.invalid_tins",)),
     ("/api/tin/sync-missing", ("upload_tin_registration",)),
     ("/api/upload-tin-reg", ("upload_tin_registration",)),
     ("/api/tin-master", ("upload_tin_registration",)),
@@ -70,6 +73,17 @@ def _permission_denied_response():
 
 def get_request_permissions(path: str):
     normalized_path = (path or "").rstrip("/") or "/"
+
+    # These routes contain a dynamic TIN/source segment before the feature
+    # suffix, so a static prefix such as /api/invalid-tins/business-decisions
+    # cannot match them. Resolve the feature-specific permission before the
+    # generic Invalid-TIN CRUD rule.
+    if normalized_path.startswith("/api/invalid-tins/"):
+        if normalized_path.endswith("/business-decisions/override"):
+            return ("business_decisions.override",)
+        if normalized_path.endswith("/business-decisions"):
+            return ("business_decisions.view",)
+
     for prefix, permission_codes in PATH_PERMISSION_RULES:
         normalized_prefix = prefix.rstrip("/") or "/"
         if normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/"):

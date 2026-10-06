@@ -1,0 +1,93 @@
+"""Idempotent DDL for the two new feature tables only."""
+
+FRAUD_BUSINESS_DECISIONS_DDL = """
+CREATE TABLE IF NOT EXISTS fraud_business_decisions (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    tax_type VARCHAR(3) NOT NULL,
+    source_table VARCHAR(64) NOT NULL,
+    source_record_id BIGINT NOT NULL,
+    source_identity_key VARCHAR(80) GENERATED ALWAYS AS
+        (CONCAT(tax_type, ':', source_record_id)) STORED,
+    decision_version INT UNSIGNED NOT NULL,
+    is_current TINYINT(1) NOT NULL DEFAULT 1,
+    current_identity_key VARCHAR(80) GENERATED ALWAYS AS
+        (CASE WHEN is_current = 1 THEN CONCAT(tax_type, ':', source_record_id) ELSE NULL END) STORED,
+    previous_decision_id BIGINT NULL,
+    tin_original VARCHAR(64) NULL,
+    tin_key CHAR(9) NULL,
+    taxpayer_name_at_decision VARCHAR(255) NULL,
+    tax_period_year SMALLINT UNSIGNED NOT NULL,
+    tax_period_month TINYINT UNSIGNED NULL,
+    assessment_number VARCHAR(128) NULL,
+    tax_account_number VARCHAR(128) NULL,
+    upload_batch_id VARCHAR(128) NULL,
+    run_id VARCHAR(40) NULL,
+    source_user_id BIGINT NULL,
+    original_ml_result VARCHAR(32) NOT NULL,
+    original_rule_result VARCHAR(32) NULL,
+    original_predicted_fraud VARCHAR(32) NULL,
+    original_is_fraud BIGINT NULL,
+    original_is_fraud_rule BIGINT NULL,
+    original_rules_violated LONGTEXT NULL,
+    original_fraud_probability DECIMAL(12,10) NULL,
+    original_explanation LONGTEXT NULL,
+    original_justification LONGTEXT NULL,
+    original_rule_evidence_json JSON NULL,
+    original_source_metadata_json JSON NULL,
+    invalid_tin_state_at_decision VARCHAR(24) NOT NULL,
+    invalid_tin_id BIGINT NULL,
+    invalid_tin_status_at_decision TINYINT(1) NULL,
+    current_business_result VARCHAR(32) NOT NULL,
+    business_decision_type VARCHAR(32) NOT NULL,
+    decision_reason VARCHAR(64) NOT NULL,
+    override_reason LONGTEXT NULL,
+    override_by_user_id BIGINT NULL,
+    decided_by_user_id BIGINT NULL,
+    decided_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_fbd_source_version (tax_type, source_record_id, decision_version),
+    UNIQUE KEY uq_fbd_current_source (current_identity_key),
+    KEY ix_fbd_tin (tin_key, tax_type, tax_period_year, tax_period_month),
+    KEY ix_fbd_source_history (tax_type, source_record_id, decision_version),
+    KEY ix_fbd_period (tax_type, tax_period_year, tax_period_month, is_current),
+    KEY ix_fbd_batch_run (upload_batch_id, run_id, tax_type),
+    KEY ix_fbd_current_result (tax_type, current_business_result, is_current),
+    KEY ix_fbd_invalid_tin (tin_key, invalid_tin_state_at_decision, is_current)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+FRAUD_BUSINESS_DECISION_JOBS_DDL = """
+CREATE TABLE IF NOT EXISTS fraud_business_decision_jobs (
+    job_id BIGINT NOT NULL AUTO_INCREMENT,
+    tin CHAR(9) NOT NULL,
+    requested_action VARCHAR(16) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    active_job_key VARCHAR(64) GENERATED ALWAYS AS
+        (CASE WHEN status IN ('QUEUED','RUNNING','RETRYING','PAUSED')
+              THEN CONCAT(tin, '\\:ACTIVE') ELSE NULL END) STORED,
+    current_tax_type VARCHAR(3) NULL,
+    last_processed_source_id BIGINT NULL,
+    records_processed BIGINT NOT NULL DEFAULT 0,
+    records_overridden BIGINT NOT NULL DEFAULT 0,
+    records_skipped BIGINT NOT NULL DEFAULT 0,
+    records_failed BIGINT NOT NULL DEFAULT 0,
+    retry_count INT NOT NULL DEFAULT 0,
+    error_message LONGTEXT NULL,
+    started_at DATETIME(6) NULL,
+    completed_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    requested_by_user_id BIGINT NOT NULL,
+    requested_status_before TINYINT(1) NOT NULL,
+    requested_status_after TINYINT(1) NOT NULL,
+    policy_version VARCHAR(32) NOT NULL,
+    worker_id VARCHAR(128) NULL,
+    lease_until DATETIME(6) NULL,
+    PRIMARY KEY (job_id),
+    UNIQUE KEY uq_fbdj_active_tin (active_job_key),
+    KEY ix_fbdj_tin_status (tin, status),
+    KEY ix_fbdj_status_updated (status, updated_at),
+    KEY ix_fbdj_lease (status, lease_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""

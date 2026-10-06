@@ -11,6 +11,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
 from config.db_config import get_mysql_engine
+from business_decisions.schema import (
+    FRAUD_BUSINESS_DECISIONS_DDL,
+    FRAUD_BUSINESS_DECISION_JOBS_DDL,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -19,6 +23,9 @@ from config.db_config import get_mysql_engine
 # ─────────────────────────────────────────────────────────────
 
 DDL_STATEMENTS = {
+
+    "fraud_business_decisions": FRAUD_BUSINESS_DECISIONS_DDL,
+    "fraud_business_decision_jobs": FRAUD_BUSINESS_DECISION_JOBS_DDL,
 
     # ── Shared logging tables (upload_logger.py) ──────────────
 
@@ -643,6 +650,9 @@ PERMISSION_SEED = [
     {"code": "settings", "name": "Settings", "description": "Settings navigation", "parent_code": None, "sort_order": 60},
     {"code": "settings.users", "name": "Users", "description": "User management", "parent_code": "settings", "sort_order": 61},
     {"code": "settings.invalid_tins", "name": "Invalid Tins", "description": "Invalid TIN management", "parent_code": "settings", "sort_order": 62},
+    {"code": "business_decisions.view", "name": "Business Decision History", "description": "View Invalid-TIN business decisions", "parent_code": "settings", "sort_order": 63},
+    {"code": "business_decisions.override", "name": "Business Decision Override", "description": "Override Invalid-TIN business decisions", "parent_code": "settings", "sort_order": 64},
+    {"code": "business_decisions.jobs", "name": "Business Decision Jobs", "description": "View Invalid-TIN decision jobs", "parent_code": "settings", "sort_order": 65},
     {"code": "settings.reset_db", "name": "Reset DB", "description": "Database reset", "parent_code": "settings", "sort_order": 63},
     {"code": "settings.conflicts", "name": "Conflicts", "description": "Conflict management navigation", "parent_code": "settings", "sort_order": 64},
     {"code": "settings.conflicts.list", "name": "List", "description": "Conflicts list", "parent_code": "settings.conflicts", "sort_order": 65},

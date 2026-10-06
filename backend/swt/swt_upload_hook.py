@@ -28,6 +28,7 @@ from utils.bulk_insert_utils import (
 from utils.pipeline_logger import log_step
 from utils.database_locks import financial_data_lock
 from utils.file_security import cleanup_final_output_directory, write_encrypted_output_dataframe
+from business_decisions.integration import insert_with_business_decisions
 
 
 def save_swt_justification_to_db(
@@ -247,13 +248,15 @@ def save_swt_justification_to_db(
 
         # Serialize large inserts with database reset and MultiTax refresh.
         with financial_data_lock(engine, timeout_seconds=30):
-            inserted_rows = chunked_multi_insert(
+            inserted_rows = insert_with_business_decisions(
                 df_to_insert,
                 table_name,
+                'SWT',
                 engine,
-                table_already_exists=db_table_exists,
                 chunksize=DEFAULT_INSERT_CHUNK_SIZE,
                 progress_callback=_on_chunk,
+                run_id=run_id,
+                user_id=user_id,
             )
 
         if not db_table_exists:

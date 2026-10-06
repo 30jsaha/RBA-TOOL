@@ -142,6 +142,9 @@ app.register_blueprint(validate_bp)
 # â”€â”€ Auto-create all DB tables on startup
 from config.db_init import init_db
 init_db()
+from business_decisions.worker import worker_loop
+import threading
+threading.Thread(target=worker_loop, args=(db.engine,), name="invalid-tin-worker", daemon=True).start()
 
 # Dashboards (ported from old-backend)
 app.register_blueprint(gst_dashboard_bp)
