@@ -5,6 +5,7 @@
 # Database Dumps & Large Data Files
 *.sql
 *.sql.gz
+!new-tables-rba/**
 *.dump
 *.tar
 # *.zip
