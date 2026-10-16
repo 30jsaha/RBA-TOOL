@@ -23,6 +23,7 @@ export default function PNGMapGST({ staticData = [], onProvinceSelect = () => {}
       scrollWheelZoom: true,
     });
     mapRef.current = map;
+    container?.setAttribute("data-map-ready", "false");
     
 
     fetch("/data/png-provinces.geojson")
@@ -190,10 +191,14 @@ export default function PNGMapGST({ staticData = [], onProvinceSelect = () => {}
         };
 
         legend.addTo(map);
+        map.whenReady(() => {
+          container?.setAttribute("data-map-ready", "true");
+        });
 
       });
 
     return () => {
+      container?.setAttribute("data-map-ready", "false");
       if (mapRef.current) mapRef.current.remove();
       mapRef.current = null;
     };

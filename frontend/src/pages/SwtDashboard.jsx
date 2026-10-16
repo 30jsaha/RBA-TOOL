@@ -34,6 +34,14 @@ import API from "../api/api";
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import {
+  closePdfExportProgress,
+  PdfExportCancelledError,
+  showPdfExportError,
+  startPdfExportProgress,
+  throwIfPdfExportCancelled,
+  updatePdfExportProgress,
+} from "../utils/dashboardPdfExportUi";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -44,6 +52,22 @@ const dashboardMemoryCache = new Map();
 const inflightDashboardRequests = new Map();
 const VIEW_KEYS = { salary: "salary", fraud: "fraud", segmentation: "segmentation" };
 const PNGMapSWT = lazy(() => import("../components/maps/PNGMapSWT"));
+const SWT_PDF_MAP_READY_TIMEOUT_MS = 5000;
+
+const waitForSwtMapRender = async () => {
+  const deadline = Date.now() + SWT_PDF_MAP_READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const map = document.getElementById("swtHeatMapContainer");
+    const hasProvinceLayer = Boolean(map?.querySelector("svg path.leaflet-interactive"));
+    const hasLegend = Boolean(map?.querySelector(".info.legend"));
+
+    if (map?.dataset.mapReady === "true" && hasProvinceLayer && hasLegend) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+
+  return false;
+};
 
 export default function SwtDashboard() {
   const [collapsed, setCollapsed] = useState(true);               // Sidebar collapsed by default
@@ -104,63 +128,139 @@ export default function SwtDashboard() {
   const dashboardRequestIdRef = useRef(0);
   const provinceRequestIdRef = useRef(0);
   const salaryRequestIdRef = useRef(0);
+  const pdfExportInFlightRef = useRef(false);
+  const pdfExportCancelRequestedRef = useRef(false);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
 
   const downloadDashboardSWTPDF = async () => {
-      const input = dashboardSWTRef.current;
-      if (!input) return;
-  
-      const pdf = new jsPDF("p", "mm", "a4");
-      const sections = input.querySelectorAll(".page");
-  
-      const now = dayjs().format("DD MMM YYYY, HH:mm");
-      let isFirstPage = true;
-  
-      // 1. Hide buttons temporarily
-      const hiddenEls = input.querySelectorAll(".hideme");
-      hiddenEls.forEach(el => {
-        el.dataset.originalDisplay = el.style.display;
-        el.style.display = "none";
-      });
-  
-      // 2. Generate PDF
-      for (let section of sections) {
+    if (pdfExportInFlightRef.current) return;
+
+    const input = dashboardSWTRef.current;
+    if (!input) return;
+
+    pdfExportInFlightRef.current = true;
+    pdfExportCancelRequestedRef.current = false;
+    setIsPdfExporting(true);
+    startPdfExportProgress(pdfExportCancelRequestedRef);
+
+    let pdf;
+    const sections = input.querySelectorAll(".page");
+    const now = dayjs().format("DD MMM YYYY, HH:mm");
+    let isFirstPage = true;
+    const hiddenEls = input.querySelectorAll(".hideme");
+    const submitButton = input.querySelector(".swt-pdf-submit");
+    const exportHiddenEls = [...hiddenEls, submitButton].filter(Boolean);
+
+    exportHiddenEls.forEach((element) => {
+      element.dataset.originalDisplay = element.style.display;
+      element.style.display = "none";
+    });
+    input.classList.add("swt-pdf-export");
+
+    let exportError = null;
+    let wasCancelled = false;
+
+    try {
+      pdf = new jsPDF("p", "mm", "a4");
+      updatePdfExportProgress("Waiting for the map to finish rendering…");
+      await waitForSwtMapRender();
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      await document.fonts?.ready;
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+      updatePdfExportProgress("Capturing the live map and legend…");
+      const liveMap = document.getElementById("swtHeatMapContainer");
+      const liveMapRect = liveMap?.getBoundingClientRect();
+      const liveMapCanvas = liveMap
+        ? await html2canvas(liveMap, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ddd",
+            scrollX: 0,
+            scrollY: -window.scrollY,
+          })
+        : null;
+      const liveMapImageData = liveMapCanvas?.toDataURL("image/png");
+
+      for (const [sectionIndex, section] of sections.entries()) {
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+        updatePdfExportProgress(`Capturing dashboard section ${sectionIndex + 1} of ${sections.length}…`);
         const canvas = await html2canvas(section, {
           scale: 2,
           useCORS: true,
+          backgroundColor: "#ffffff",
+          scrollX: 0,
           scrollY: -window.scrollY,
+          onclone: (clonedDocument) => {
+            const clonedMap = clonedDocument.querySelector("#swtHeatMapContainer");
+            if (!clonedMap || !liveMapImageData || !liveMapRect) return;
+
+            clonedMap.replaceChildren();
+            clonedMap.style.width = `${liveMapRect.width}px`;
+            clonedMap.style.height = `${liveMapRect.height}px`;
+            const mapImage = clonedDocument.createElement("img");
+            mapImage.src = liveMapImageData;
+            mapImage.alt = "Fraud TIN Distribution by Province map";
+            mapImage.style.display = "block";
+            mapImage.style.width = "100%";
+            mapImage.style.height = "100%";
+            mapImage.style.objectFit = "fill";
+            clonedMap.appendChild(mapImage);
+          },
         });
-  
-        const imgData = canvas.toDataURL("image/png");
-  
-        const pageWidth = pdf.internal.pageSize.getWidth(); // 210
-        const margin = 10; // left + right margin
-        const imgWidth = pageWidth - margin * 2; // 190mm
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-  
-  
-        if (!isFirstPage) {
-          pdf.addPage();
-        }
-  
-        // Header
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+
+        const imageData = canvas.toDataURL("image/png");
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const headerHeight = 20;
+        const imageWidth = pageWidth - margin * 2;
+        const imageHeight = (canvas.height * imageWidth) / canvas.width;
+        const maxImageHeight = pageHeight - headerHeight - margin;
+        const fitScale = Math.min(1, maxImageHeight / imageHeight);
+        const fittedWidth = imageWidth * fitScale;
+        const fittedHeight = imageHeight * fitScale;
+        const imageX = (pageWidth - fittedWidth) / 2;
+
+        if (!isFirstPage) pdf.addPage();
         pdf.setFontSize(12);
-        pdf.text("SWT Dashboard Report", 10, 10);
+        pdf.text("SWT Dashboard Report", margin, 10);
         pdf.setFontSize(8);
-        pdf.text(`Generated: ${now}`, 10, 15);
-  
-        pdf.addImage(imgData, "PNG", margin, 20, imgWidth, imgHeight);
-  
+        pdf.text(`Generated: ${now}`, margin, 15);
+        pdf.addImage(imageData, "PNG", imageX, headerHeight, fittedWidth, fittedHeight);
         isFirstPage = false;
       }
-  
-      // 3. Restore hidden elements
-      hiddenEls.forEach(el => {
-        el.style.display = el.dataset.originalDisplay || "";
-      });
-  
+
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      updatePdfExportProgress("Starting the PDF download…");
       const fileTime = dayjs().format("YYYY-MM-DD_HH-mm");
       pdf.save(`SWT-Dashboard_${fileTime}.pdf`);
-    };
+    } catch (error) {
+      if (error instanceof PdfExportCancelledError) {
+        wasCancelled = true;
+      } else {
+        exportError = error;
+      }
+    } finally {
+      input.classList.remove("swt-pdf-export");
+      exportHiddenEls.forEach((element) => {
+        element.style.display = element.dataset.originalDisplay || "";
+        delete element.dataset.originalDisplay;
+      });
+      closePdfExportProgress();
+      pdfExportInFlightRef.current = false;
+      pdfExportCancelRequestedRef.current = false;
+      setIsPdfExporting(false);
+    }
+
+    if (exportError && !wasCancelled) {
+      const retryResult = await showPdfExportError(exportError);
+      if (retryResult.isConfirmed) {
+        void downloadDashboardSWTPDF();
+      }
+    }
+  };
   
 
 
@@ -821,6 +921,7 @@ export default function SwtDashboard() {
                       color="primary"
                       size="small"
                       onClick={downloadDashboardSWTPDF}
+                      disabled={isPdfExporting}
                     >
                       Download PDF
                     </Button>
@@ -841,7 +942,11 @@ export default function SwtDashboard() {
                     </FormControl>
                   </div>
 
-                  <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0">
+                  <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0 swt-pdf-date-filter-column">
+                    <div className="pdf-export-only swt-pdf-date-range" aria-hidden="true">
+                      <span>Start Date: {appliedFilters.startDate?.format("DD MMM YYYY") || "-"}</span>
+                      <span>End Date: {appliedFilters.endDate?.format("DD MMM YYYY") || "-"}</span>
+                    </div>
                       
                     {tenure === "custom" ? (
                       <LocalizationProvider dateAdapter={AdapterDayjs}>
@@ -903,6 +1008,7 @@ export default function SwtDashboard() {
                       </div>
                     )}
                     <Button
+                      className="swt-pdf-submit"
                       size="small"
                       variant="contained"
                       onClick={handleSubmitFilters}
@@ -1047,6 +1153,8 @@ export default function SwtDashboard() {
                   </div>
                 </div>
 
+              </div>
+
                 <div className="page">
                 <div className="row mb-4" ref={provinceSectionRef}>
                   <div className="col-12">
@@ -1189,9 +1297,6 @@ export default function SwtDashboard() {
                   </div>
                 </div>
                 </div>
-
-              </div>
-              
 
               {/* Latest SWT Records Table */}
               <Paper className="p-3 mb-4 page">

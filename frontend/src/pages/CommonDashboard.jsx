@@ -35,6 +35,14 @@ import TableSkeleton from "../components/common/TableSkeleton";
 import ChartDataCard from "../components/common/ChartDataCard";
 import "./css/Dashboard.css";
 import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
+import {
+  closePdfExportProgress,
+  PdfExportCancelledError,
+  showPdfExportError,
+  startPdfExportProgress,
+  throwIfPdfExportCancelled,
+  updatePdfExportProgress,
+} from "../utils/dashboardPdfExportUi";
 
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -819,61 +827,95 @@ export default function CommonDashboard() {
   );
 
   const dashboardRef = useRef();
+  const pdfExportInFlightRef = useRef(false);
+  const pdfExportCancelRequestedRef = useRef(false);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
   const downloadDashboardPDF = useCallback(async () => {
+    if (pdfExportInFlightRef.current) return;
+
     const input = dashboardRef.current;
     if (!input) return;
 
-    const pdf = new jsPDF("p", "mm", "a4");
-    const sections = input.querySelectorAll(".page");
+    pdfExportInFlightRef.current = true;
+    pdfExportCancelRequestedRef.current = false;
+    setIsPdfExporting(true);
+    startPdfExportProgress(pdfExportCancelRequestedRef);
 
+    let pdf;
+    const sections = input.querySelectorAll(".page");
     const now = dayjs().format("DD MMM YYYY, HH:mm");
     let isFirstPage = true;
-
-    // 1. Hide buttons temporarily
     const hiddenEls = input.querySelectorAll(".hideme");
-    hiddenEls.forEach(el => {
-      el.dataset.originalDisplay = el.style.display;
-      el.style.display = "none";
+    hiddenEls.forEach((element) => {
+      element.dataset.originalDisplay = element.style.display;
+      element.style.display = "none";
     });
 
-    // 2. Generate PDF
-    for (let section of sections) {
-      const canvas = await html2canvas(section, {
-        scale: 2,
-        useCORS: true,
-        scrollY: -window.scrollY,
-      });
+    let exportError = null;
+    let wasCancelled = false;
 
-      const imgData = canvas.toDataURL("image/png");
+    try {
+      pdf = new jsPDF("p", "mm", "a4");
+      updatePdfExportProgress("Preparing the dashboard for capture…");
+      await document.fonts?.ready;
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-      const pageWidth = pdf.internal.pageSize.getWidth(); // 210
-      const margin = 10; // left + right margin
-      const imgWidth = pageWidth - margin * 2; // 190mm
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      for (const [sectionIndex, section] of sections.entries()) {
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+        updatePdfExportProgress(`Capturing charts and tables, section ${sectionIndex + 1} of ${sections.length}…`);
+        const canvas = await html2canvas(section, {
+          scale: 2,
+          useCORS: true,
+          scrollY: -window.scrollY,
+        });
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
 
+        const imageData = canvas.toDataURL("image/png");
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const margin = 10;
+        const imageWidth = pageWidth - margin * 2;
+        const imageHeight = (canvas.height * imageWidth) / canvas.width;
 
-      if (!isFirstPage) {
-        pdf.addPage();
+        if (!isFirstPage) {
+          pdf.addPage();
+        }
+
+        updatePdfExportProgress("Building the PDF…");
+        pdf.setFontSize(12);
+        pdf.text("Common Dashboard Report", 10, 10);
+        pdf.setFontSize(8);
+        pdf.text(`Generated: ${now}`, 10, 15);
+        pdf.addImage(imageData, "PNG", margin, 20, imageWidth, imageHeight);
+        isFirstPage = false;
       }
 
-      // Header
-      pdf.setFontSize(12);
-      pdf.text("Common Dashboard Report", 10, 10);
-      pdf.setFontSize(8);
-      pdf.text(`Generated: ${now}`, 10, 15);
-
-      pdf.addImage(imgData, "PNG", margin, 20, imgWidth, imgHeight);
-
-      isFirstPage = false;
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      updatePdfExportProgress("Starting the PDF download…");
+      const fileTime = dayjs().format("YYYY-MM-DD_HH-mm");
+      pdf.save(`Common-Dashboard_${fileTime}.pdf`);
+    } catch (error) {
+      if (error instanceof PdfExportCancelledError) {
+        wasCancelled = true;
+      } else {
+        exportError = error;
+      }
+    } finally {
+      hiddenEls.forEach((element) => {
+        element.style.display = element.dataset.originalDisplay || "";
+        delete element.dataset.originalDisplay;
+      });
+      closePdfExportProgress();
+      pdfExportInFlightRef.current = false;
+      pdfExportCancelRequestedRef.current = false;
+      setIsPdfExporting(false);
     }
 
-    // 3. Restore hidden elements
-    hiddenEls.forEach(el => {
-      el.style.display = el.dataset.originalDisplay || "";
-    });
-
-    const fileTime = dayjs().format("YYYY-MM-DD_HH-mm");
-    pdf.save(`Common-Dashboard_${fileTime}.pdf`);
+    if (exportError && !wasCancelled) {
+      const retryResult = await showPdfExportError(exportError);
+      if (retryResult.isConfirmed) {
+        void downloadDashboardPDF();
+      }
+    }
   }, []);
 
 
@@ -912,7 +954,7 @@ export default function CommonDashboard() {
                           <Button variant="outlined" color="primary" size="small" disabled={rebuildStarting || summaryStatus.status === "running"} onClick={startSummaryRebuild}>
                             Run Multi-Tax Integration
                           </Button>
-                          <Button variant="contained" color="primary" size="small" onClick={downloadDashboardPDF}>
+                          <Button variant="contained" color="primary" size="small" onClick={downloadDashboardPDF} disabled={isPdfExporting}>
                             Download PDF
                           </Button>
                         </div>

@@ -34,6 +34,14 @@ import TableChartIcon from "@mui/icons-material/TableChart";    // CSV icon
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import {
+  closePdfExportProgress,
+  PdfExportCancelledError,
+  showPdfExportError,
+  startPdfExportProgress,
+  throwIfPdfExportCancelled,
+  updatePdfExportProgress,
+} from "../utils/dashboardPdfExportUi";
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
 const num = (v) => Number(v ?? 0);
@@ -42,6 +50,22 @@ const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
 const dashboardMemoryCache = new Map();
 const inflightDashboardRequests = new Map();
 const PNGMapCIT = lazy(() => import("../components/maps/PNGMapCIT"));
+const CIT_PDF_MAP_READY_TIMEOUT_MS = 5000;
+
+const waitForCitMapRender = async () => {
+  const deadline = Date.now() + CIT_PDF_MAP_READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const map = document.getElementById("gstHeatMapContainer");
+    const hasProvinceLayer = Boolean(map?.querySelector("svg path.leaflet-interactive"));
+    const hasLegend = Boolean(map?.querySelector(".info.legend"));
+
+    if (map?.dataset.mapReady === "true" && hasProvinceLayer && hasLegend) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+
+  return false;
+};
 const CHART_TOOLBAR = {
   show: false,
 };
@@ -100,61 +124,138 @@ export default function CitDashboard() {
   const provinceRequestIdRef = useRef(0);
   const isMountedRef = useRef(false);
   const loadMetricsRef = useRef({ key: "", startedAt: 0, dataReadyAt: 0, renderLogged: false });
+  const pdfExportInFlightRef = useRef(false);
+  const pdfExportCancelRequestedRef = useRef(false);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
 
   const downloadDashboardPDF = async () => {
+    if (pdfExportInFlightRef.current) return;
+
     const input = dashboardCitRef.current;
     if (!input) return;
 
-    const pdf = new jsPDF("p", "mm", "a4");
-    const sections = input.querySelectorAll(".page");
+    pdfExportInFlightRef.current = true;
+    pdfExportCancelRequestedRef.current = false;
+    setIsPdfExporting(true);
+    startPdfExportProgress(pdfExportCancelRequestedRef);
 
+    let pdf;
+    const sections = input.querySelectorAll(".page");
     const now = dayjs().format("DD MMM YYYY, HH:mm");
     let isFirstPage = true;
-
-    // 1. Hide buttons temporarily
     const hiddenEls = input.querySelectorAll(".hideme");
-    hiddenEls.forEach(el => {
-      el.dataset.originalDisplay = el.style.display;
-      el.style.display = "none";
+    const submitButton = input.querySelector(".cit-pdf-submit");
+    const exportHiddenEls = [...hiddenEls, submitButton].filter(Boolean);
+
+    exportHiddenEls.forEach((element) => {
+      element.dataset.originalDisplay = element.style.display;
+      element.style.display = "none";
     });
+    input.classList.add("cit-pdf-export");
 
-    // 2. Generate PDF
-    for (let section of sections) {
-      const canvas = await html2canvas(section, {
-        scale: 2,
-        useCORS: true,
-        scrollY: -window.scrollY,
-      });
+    let exportError = null;
+    let wasCancelled = false;
 
-      const imgData = canvas.toDataURL("image/png");
+    try {
+      pdf = new jsPDF("p", "mm", "a4");
+      updatePdfExportProgress("Waiting for the map to finish rendering…");
+      await waitForCitMapRender();
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      await document.fonts?.ready;
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-      const pageWidth = pdf.internal.pageSize.getWidth(); // 210
-      const margin = 10; // left + right margin
-      const imgWidth = pageWidth - margin * 2; // 190mm
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      updatePdfExportProgress("Capturing the live map and legend…");
+      const liveMap = document.getElementById("gstHeatMapContainer");
+      const liveMapRect = liveMap?.getBoundingClientRect();
+      const liveMapCanvas = liveMap
+        ? await html2canvas(liveMap, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ddd",
+            scrollX: 0,
+            scrollY: -window.scrollY,
+          })
+        : null;
+      const liveMapImageData = liveMapCanvas?.toDataURL("image/png");
 
-      if (!isFirstPage) {
-        pdf.addPage();
+      for (const [sectionIndex, section] of sections.entries()) {
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+        updatePdfExportProgress(`Capturing dashboard section ${sectionIndex + 1} of ${sections.length}…`);
+        const canvas = await html2canvas(section, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: "#ffffff",
+          scrollX: 0,
+          scrollY: -window.scrollY,
+          onclone: (clonedDocument) => {
+            const clonedMap = clonedDocument.querySelector("#gstHeatMapContainer");
+            if (!clonedMap || !liveMapImageData || !liveMapRect) return;
+
+            clonedMap.replaceChildren();
+            clonedMap.style.width = `${liveMapRect.width}px`;
+            clonedMap.style.height = `${liveMapRect.height}px`;
+            const mapImage = clonedDocument.createElement("img");
+            mapImage.src = liveMapImageData;
+            mapImage.alt = "Fraud TIN Distribution by Province map";
+            mapImage.style.display = "block";
+            mapImage.style.width = "100%";
+            mapImage.style.height = "100%";
+            mapImage.style.objectFit = "fill";
+            clonedMap.appendChild(mapImage);
+          },
+        });
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+
+        const imageData = canvas.toDataURL("image/png");
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const headerHeight = 20;
+        const imageWidth = pageWidth - margin * 2;
+        const imageHeight = (canvas.height * imageWidth) / canvas.width;
+        const maxImageHeight = pageHeight - headerHeight - margin;
+        const fitScale = Math.min(1, maxImageHeight / imageHeight);
+        const fittedWidth = imageWidth * fitScale;
+        const fittedHeight = imageHeight * fitScale;
+        const imageX = (pageWidth - fittedWidth) / 2;
+
+        if (!isFirstPage) pdf.addPage();
+        pdf.setFontSize(12);
+        pdf.text("CIT Dashboard Report", margin, 10);
+        pdf.setFontSize(8);
+        pdf.text(`Generated: ${now}`, margin, 15);
+        pdf.addImage(imageData, "PNG", imageX, headerHeight, fittedWidth, fittedHeight);
+        isFirstPage = false;
       }
 
-      // Header
-      pdf.setFontSize(12);
-      pdf.text("CIT Dashboard Report", 10, 10);
-      pdf.setFontSize(8);
-      pdf.text(`Generated: ${now}`, 10, 15);
-
-      pdf.addImage(imgData, "PNG", margin, 20, imgWidth, imgHeight);
-
-      isFirstPage = false;
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      updatePdfExportProgress("Starting the PDF download…");
+      const fileTime = dayjs().format("YYYY-MM-DD_HH-mm");
+      pdf.save(`CIT-Dashboard_${fileTime}.pdf`);
+    } catch (error) {
+      if (error instanceof PdfExportCancelledError) {
+        wasCancelled = true;
+      } else {
+        exportError = error;
+      }
+    } finally {
+      input.classList.remove("cit-pdf-export");
+      exportHiddenEls.forEach((element) => {
+        element.style.display = element.dataset.originalDisplay || "";
+        delete element.dataset.originalDisplay;
+      });
+      closePdfExportProgress();
+      pdfExportInFlightRef.current = false;
+      pdfExportCancelRequestedRef.current = false;
+      setIsPdfExporting(false);
     }
 
-    // 3. Restore hidden elements
-    hiddenEls.forEach(el => {
-      el.style.display = el.dataset.originalDisplay || "";
-    });
-
-    const fileTime = dayjs().format("YYYY-MM-DD_HH-mm");
-    pdf.save(`CIT-Dashboard_${fileTime}.pdf`);
+    if (exportError && !wasCancelled) {
+      const retryResult = await showPdfExportError(exportError);
+      if (retryResult.isConfirmed) {
+        void downloadDashboardPDF();
+      }
+    }
   };
 
   /* ================= HELPERS ================= */
@@ -884,6 +985,7 @@ export default function CitDashboard() {
                 color="primary"
                 size="small"
                 onClick={downloadDashboardPDF}
+                disabled={isPdfExporting}
               >
                 Download PDF
               </Button>
@@ -903,7 +1005,11 @@ export default function CitDashboard() {
                 </FormControl>
               </div>
 
-              <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0">
+              <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0 cit-pdf-date-filter-column">
+                <div className="pdf-export-only cit-pdf-date-range" aria-hidden="true">
+                  <span>Start Date: {appliedFilters.startDate?.format("DD MMM YYYY") || "-"}</span>
+                  <span>End Date: {appliedFilters.endDate?.format("DD MMM YYYY") || "-"}</span>
+                </div>
                 {tenure === "custom" ? (
                   <LocalizationProvider dateAdapter={AdapterDayjs}>
                     <DatePicker
@@ -958,6 +1064,7 @@ export default function CitDashboard() {
                   </div>
                 )}
                 <Button
+                  className="cit-pdf-submit"
                   size="small"
                   variant="contained"
                   disabled={sectionLoading.summary || (tenure === appliedFilters.tenure && startDate.valueOf() === appliedFilters.startDate.valueOf() && endDate.valueOf() === appliedFilters.endDate.valueOf() && topCount === appliedFilters.topCount)}

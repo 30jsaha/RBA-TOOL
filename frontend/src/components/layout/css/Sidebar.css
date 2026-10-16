@@ -1,156 +1,865 @@
-/* ===========================
-   SIDEBAR – PNG Corporate Gradient UI
-   =========================== */
 
-.sidebar {
-  position: fixed;                           /* ✅ Sidebar starts below navbar */
-  left: 0;
-  width: 250px;
-  max-height: 100%;
-  /* height: calc(100vh - 56px); */
-  height: 100vh;
-  padding: 1rem;
-  background: linear-gradient(180deg, #1B2B74 0%, #6A00FF 100%);
-  background-attachment: fixed;
-  border-right: 2px solid rgba(255, 255, 255, 0.568);
-  box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+/* ==========================================================
+   RBA TOOL — SIDEBAR NAVIGATION
+   Expanded sidebar + collapsed icon rail + submenu flyouts
+   CSS only: no backend, API, route, or permission changes.
+   ========================================================== */
 
-  color: var(--text-light);
+:root {
+  --sidebar-expanded-width: 250px;
+  --sidebar-collapsed-width: 75px;
 
-  overflow-y: auto;
-  overflow-x: visible !important;       /* ✅ Allow submenu overlay */
-  transition: width 0.28s ease-in-out;
-  z-index: 9999;
+  --sidebar-gradient-start: #1b2b74;
+  --sidebar-gradient-middle: #4219bd;
+  --sidebar-gradient-end: #6a00ff;
+
+  --sidebar-text: #ffffff;
+  --sidebar-icon: #8abaff;
+  --sidebar-hover: rgba(255, 255, 255, 0.12);
+  --sidebar-active: #cf1234;
+  --sidebar-active-accent: #ffdf35;
+
+  --sidebar-flyout-bg: #1b2b74;
+  --sidebar-flyout-text: #ffffff;
+  --sidebar-flyout-hover: rgba(255, 255, 255, 0.14);
+
+  --sidebar-transition: 220ms ease;
 }
 
-/* ------------ HEADER (logo + collapse btn) ---------------- */
+/* ==========================================================
+   SIDEBAR CONTAINER
+   ========================================================== */
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+
+  width: var(--sidebar-expanded-width);
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+
+  padding: 12px 10px;
+
+  color: var(--sidebar-text);
+  background: linear-gradient(
+    180deg,
+    var(--sidebar-gradient-start) 0%,
+    var(--sidebar-gradient-middle) 55%,
+    var(--sidebar-gradient-end) 100%
+  );
+
+  border-right: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 3px 0 18px rgba(18, 17, 63, 0.12);
+
+  /*
+   * Keep horizontal overflow visible so flyouts can extend
+   * beyond the collapsed icon rail.
+   */
+  overflow: visible;
+  z-index: 1200;
+  isolation: isolate;
+
+  transition: width var(--sidebar-transition);
+}
+
+.sidebar,
+.sidebar * {
+  box-sizing: border-box;
+}
+
+/* ==========================================================
+   SIDEBAR HEADER
+   ========================================================== */
+
 .sidebar-header {
-  padding: 12px 14px;
-  border-bottom: 2px solid rgba(29, 3, 66, 0.4);
-  backdrop-filter: blur(4px);
+  position: relative;
+  z-index: 2;
 
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+
+  min-height: 54px;
+  padding: 6px 8px 12px;
+
+  border-bottom: 1px solid rgba(255, 255, 255, 0.17);
 }
 
-/* ========== COLLAPSE STYLES ========== */
-.sidebar.collapsed {
-  width: 75px !important;               /* ✅ Requested width */
+.sidebar-logo {
+  display: block;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  object-fit: contain;
 }
 
-/* ✅ Hide logo + text when collapsed */
-.sidebar.collapsed .sidebar-logo,
-.sidebar.collapsed .label {
-  display: none !important;
+.sidebar-header .label {
+  color: #ffffff;
+  white-space: nowrap;
 }
 
-/* ✅ Center icons when collapsed */
-.sidebar.collapsed .nav-link {
-  justify-content: center !important;
+/* ==========================================================
+   COLLAPSE / EXPAND BUTTON
+   ========================================================== */
+
+.sidebar .collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  flex: 0 0 38px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+
+  margin: 0;
+  padding: 0 !important;
+
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.2);
+
+  border: 1px solid rgba(255, 255, 255, 0.13) !important;
+  border-radius: 9px;
+
+  box-shadow: none;
+  cursor: pointer;
+
+  transition:
+    background-color var(--sidebar-transition),
+    border-color var(--sidebar-transition);
 }
 
-/* ✅ Hide right chevron when collapsed */
-.sidebar.collapsed .arrow {
-  display: none !important;
+.sidebar .collapse-btn svg {
+  display: block;
+  width: 21px;
+  height: 21px;
 }
 
-/* ------------ LINKS ---------------- */
-.nav-link {
-  padding: 10px 14px;
+.sidebar .collapse-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.28) !important;
+}
+
+.sidebar .collapse-btn:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 3px;
+}
+
+/* ==========================================================
+   NAVIGATION SCROLLER
+   ========================================================== */
+
+.sidebar > .nav {
+  position: relative;
+  z-index: 1;
+
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+
+  width: 100%;
+  height: calc(100% - 66px);
+  max-height: calc(100% - 66px);
+
+  margin-top: 12px !important;
+  padding: 0 2px 12px !important;
+
+  /*
+   * The outer sidebar must remain overflow: visible.
+   * The navigation list handles vertical scrolling.
+   */
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+}
+
+.sidebar > .nav::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar > .nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar > .nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+}
+
+/* ==========================================================
+   NAVIGATION LINKS
+   ========================================================== */
+
+.sidebar .nav-link {
+  position: relative;
+
   display: flex;
   align-items: center;
-  gap: 12px;
-  border-radius: 10px;
-  font-size: 0.95rem;
-  color: #ffffff;
-  transition: all 0.25s ease;
-  position: relative;
+  justify-content: flex-start;
+  gap: 11px;
+
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+
+  margin: 0;
+  padding: 10px 12px !important;
+
+  color: var(--sidebar-text);
+  background: transparent;
+
+  border: 1px solid transparent;
+  border-radius: 9px;
+
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  text-decoration: none;
+
+  white-space: normal;
+  overflow-wrap: anywhere;
+
+  box-shadow: none;
+  cursor: pointer;
+
+  transition:
+    background-color var(--sidebar-transition),
+    color var(--sidebar-transition),
+    border-color var(--sidebar-transition);
 }
 
-.nav-link svg {
+/* Reset button defaults only inside the sidebar. */
+.sidebar button.nav-link {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+}
+
+/* Keep the icon and label aligned when JSX uses a span wrapper. */
+.sidebar .nav-link > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sidebar .nav-link .label {
+  min-width: 0;
+}
+
+.sidebar .nav-link > svg,
+.sidebar .nav-link > span > svg {
+  display: block;
+
+  flex: 0 0 20px;
   width: 20px;
   height: 20px;
+
+  margin: 0 !important;
+  color: var(--sidebar-icon);
+
+  stroke-width: 1.9;
 }
 
-/* Hover */
-.nav-link:hover {
-  background: rgba(255, 255, 255, 0.15);
-  transform: translateX(4px);
+.sidebar .nav-link:hover {
+  color: #ffffff;
+  background: var(--sidebar-hover);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
-/* Active item (PNG Red + Gold) */
-.nav-link.active {
-  background: var(--primary) !important;
+.sidebar .nav-link:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+  z-index: 3;
+}
+
+.sidebar .nav-link:active {
+  box-shadow: none;
+}
+
+/* Active page. */
+.sidebar .nav-link.active {
+  color: #ffffff;
+  background: var(--sidebar-active);
+
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-left: 3px solid var(--sidebar-active-accent);
+
+  font-weight: 600;
+}
+
+.sidebar .nav-link.active > svg,
+.sidebar .nav-link.active > span > svg {
   color: #ffffff !important;
-  border-left: 4px solid var(--accent);
 }
 
-/* ------------ COLLAPSE BUTTON ---------------- */
-.collapse-btn,
-.btn.btn-outline-light {
-  border: none !important;
-  background: rgba(255, 255, 255, 0.28);
-  padding: 6px;
-  border-radius: 50%;
-  width: 34px;
-  height: 34px;
+/* ==========================================================
+   NAVIGATION GROUPS AND ARROWS
+   ========================================================== */
+
+.sidebar .nav-group {
+  position: relative;
+  display: block;
+
+  width: 100%;
+  min-width: 0;
+}
+
+.sidebar .nav-group > .nav-link {
+  min-width: 0;
+}
+
+.sidebar .arrow {
+  flex: 0 0 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+
+  margin-left: auto !important;
+
+  color: rgba(255, 255, 255, 0.85);
+  stroke-width: 2;
+
+  transition: transform var(--sidebar-transition);
+}
+
+.sidebar .arrow.open {
+  transform: rotate(180deg);
+}
+
+/* ==========================================================
+   EXPANDED SUBMENUS
+   ========================================================== */
+
+.sidebar .submenu-container {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.sidebar .submenu {
+  position: relative;
+
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  min-width: 0;
+  margin: 5px 0 7px 9px !important;
+  padding: 5px 0 5px 10px;
+
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.sidebar .submenu-item {
+  min-height: 39px;
+  margin: 0 !important;
+  padding: 8px 9px !important;
+
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.sidebar .submenu-item > svg {
+  flex: 0 0 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.sidebar .submenu .nav-link.active {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  border-left: 2px solid var(--sidebar-active-accent);
+}
+
+/* ==========================================================
+   COLLAPSED SIDEBAR — ICON RAIL
+   ========================================================== */
+
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+  padding: 12px 8px;
+}
+
+/* Center the collapse button in the rail. */
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 6px 0 12px;
+}
+
+.sidebar.collapsed .sidebar-logo,
+.sidebar.collapsed .sidebar-header .label {
+  display: none !important;
+}
+
+.sidebar.collapsed .collapse-btn {
+  flex-basis: 38px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+}
+
+/* Keep rail navigation evenly spaced. */
+.sidebar.collapsed > .nav {
+  align-items: center;
+  gap: 7px;
+  padding: 0 0 12px !important;
+}
+
+/*
+ * Hide root labels only. Do not globally hide labels inside
+ * flyouts, because those must remain readable.
+ */
+.sidebar.collapsed > .nav > .nav-link > .label,
+.sidebar.collapsed > .nav > .nav-group > .nav-link .label {
+  display: none !important;
+}
+
+.sidebar.collapsed > .nav > a.nav-link,
+.sidebar.collapsed > .nav > button.nav-link,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link {
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
   display: flex;
   align-items: center;
   justify-content: center;
+
+  flex: 0 0 44px;
+  flex-shrink: 0;
+
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+
+  margin: 0 auto;
+  padding: 0 !important;
+
+  gap: 0;
+
+  border: 1px solid transparent;
+  border-radius: 10px;
+
+  white-space: nowrap;
+  overflow: visible;
+  transform: none;
+  line-height: 1;
+  text-align: center;
 }
 
-.collapse-btn:hover {
-  background: rgba(255, 255, 255, 0.45);
+/* Group buttons wrap their primary icon in a span; neutralize the expanded flex rule in the rail. */
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > span:first-child,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > span:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 21px;
+  width: 21px;
+  min-width: 21px;
+  max-width: 21px;
+  margin: 0;
+  gap: 0;
 }
 
-/* ========================================
-   SUBMENU (EXPANDED)
-   ======================================== */
-.submenu {
-  padding-left: 12px;
-  margin-top: 5px;
-  transition: all 0.2s ease-in-out;
+/* Prevent Bootstrap spacing utilities from shifting icons. */
+.sidebar.collapsed > .nav > a.nav-link > svg,
+.sidebar.collapsed > .nav > button.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > span > svg,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > span > svg {
+  display: block;
+  flex: 0 0 21px;
+  width: 21px;
+  min-width: 21px;
+  height: 21px;
+
+  margin: 0 !important;
 }
 
-.submenu-item {
-  margin-bottom: 6px;
+/* Hide the arrow from the compact icon rail. */
+.sidebar.collapsed > .nav > .nav-group > .nav-link > .arrow {
+  display: none !important;
 }
 
-/* ========================================
-   SUBMENU OVERLAY (WHEN COLLAPSED)
-   ======================================== */
-.submenu-container.submenu-overlay {
+/* Stable hover state without horizontal movement. */
+.sidebar.collapsed > .nav > .nav-link:hover,
+.sidebar.collapsed > .nav > .nav-group > .nav-link:hover {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+.sidebar.collapsed > .nav > .nav-link.active,
+.sidebar.collapsed > .nav > .nav-group > .nav-link.active {
+  background: var(--sidebar-active);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: inset 3px 0 0 var(--sidebar-active-accent);
+}
+
+.sidebar.collapsed > .nav > .nav-link.active svg,
+.sidebar.collapsed > .nav > .nav-group > .nav-link.active svg {
+  color: #ffffff !important;
+}
+
+/* ==========================================================
+   COLLAPSED SUBMENU FLYOUTS
+   ========================================================== */
+
+/*
+ * The flyout is anchored to its menu group.
+ * The group must remain position: relative for this to work.
+ */
+.sidebar.collapsed .nav-group {
+  position: relative;
+  overflow: visible;
+}
+
+.sidebar.collapsed .nav-group > .submenu-container.submenu-overlay,
+.sidebar-flyout.submenu-container.submenu-overlay {
   position: absolute;
-  left: 75px;                           /* ✅ Show to the right of collapsed sidebar */
-  background: #1B2B74;
-  padding: 8px 14px;
-  min-width: 185px;
+  top: 0;
+  left: calc(100% + 8px);
+
+  width: max-content;
+  min-width: 220px;
+  max-width: min(290px, calc(100vw - 95px));
+
+  max-height: min(420px, calc(100vh - 24px));
+  max-height: min(420px, calc(100dvh - 24px));
+
+  margin: 0;
+  padding: 8px;
+
+  overflow-x: hidden;
+  overflow-y: auto;
+
+  color: var(--sidebar-flyout-text);
+  background: var(--sidebar-flyout-bg);
+
+  border: 1px solid rgba(31, 46, 94, 0.12);
+  border-radius: 12px;
+
+  box-shadow:
+    0 12px 32px rgba(19, 24, 62, 0.2),
+    0 2px 8px rgba(19, 24, 62, 0.08);
+
+  z-index: 1300;
+  isolation: isolate;
+  overscroll-behavior: contain;
+
+  animation: sidebar-flyout-in 150ms ease-out;
+}
+
+/* Portalled panels escape the navigation scroller and use measured viewport coordinates. */
+.sidebar-flyout.submenu-container.submenu-overlay {
+  position: fixed;
+  min-width: min(220px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  left: auto;
+  top: auto;
+}
+
+/* Nested flyouts, such as Settings submenus. */
+.sidebar.collapsed .submenu .nav-group > .submenu-container.submenu-overlay {
+  top: 0;
+  left: calc(100% + 4px);
+}
+
+/* Restore submenu layout and readable text inside the flyout. */
+.sidebar.collapsed .submenu-overlay .submenu,
+.sidebar-flyout .submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  width: 100%;
+  min-width: 0;
+
+  margin: 0 !important;
+  padding: 0;
+
+  border-left: 0;
+}
+
+.sidebar.collapsed .submenu-overlay .nav-link,
+.sidebar.collapsed .submenu-overlay .submenu-item,
+.sidebar-flyout .nav-link,
+.sidebar-flyout .submenu-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+
+  height: auto;
+  min-height: 42px;
+  max-height: none;
+  flex: 0 0 auto;
+
+  margin: 0 !important;
+  padding: 10px 12px !important;
+
+  gap: 10px;
+
+  color: var(--sidebar-flyout-text) !important;
+  background: transparent;
+
+  border: 1px solid transparent;
   border-radius: 8px;
-  z-index: 99999;
 
-  animation: fadeIn 0.18s ease-in-out;
-}
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-6px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-/* Scrollbar */
-.sidebar::-webkit-scrollbar {
-  width: 6px;
-}
-.sidebar::-webkit-scrollbar-thumb {
-  background: var(--primary);
-  border-radius: 3px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-/* Shift content when sidebar collapses */
-.main-content {
-  margin-left: 250px;
-  transition: margin-left 0.3s ease;
+/* Restore labels hidden in the root rail. */
+.sidebar.collapsed .submenu-overlay .label,
+.sidebar-flyout .label {
+  display: inline !important;
+  visibility: visible;
 }
+
+.sidebar.collapsed .submenu-overlay .nav-link > span:first-child,
+.sidebar-flyout .nav-link > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sidebar.collapsed .submenu-overlay .nav-link > svg,
+.sidebar.collapsed .submenu-overlay .nav-link > span > svg,
+.sidebar.collapsed .submenu-overlay .submenu-item > svg,
+.sidebar-flyout .nav-link > svg,
+.sidebar-flyout .nav-link > span > svg,
+.sidebar-flyout .submenu-item > svg {
+  flex: 0 0 18px !important;
+  width: 18px !important;
+  height: 18px !important;
+
+  margin: 0 !important;
+  color: var(--sidebar-flyout-text) !important;
+}
+
+/* Do not use the white sidebar active styling inside flyouts. */
+.sidebar.collapsed .submenu-overlay .nav-link:hover,
+.sidebar-flyout .nav-link:hover {
+  color: var(--sidebar-flyout-text);
+  background: var(--sidebar-flyout-hover);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.sidebar.collapsed .submenu-overlay .nav-link.active,
+.sidebar-flyout .nav-link.active {
+  color: #ffffff !important;
+  background: var(--sidebar-active);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 3px 0 0 var(--sidebar-active-accent);
+}
+
+.sidebar.collapsed .submenu-overlay .nav-link.active svg,
+.sidebar-flyout .nav-link.active svg {
+  color: var(--sidebar-active-accent) !important;
+}
+
+.sidebar-flyout .nested-submenu {
+  margin: 4px 0 4px 12px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(31, 46, 94, 0.18);
+}
+/* ==========================================================
+   MAIN CONTENT ALIGNMENT
+   ========================================================== */
+
+.sidebar ~ .main-content {
+  min-width: 0;
+  margin-left: var(--sidebar-expanded-width);
+
+  transition: margin-left var(--sidebar-transition);
+}
+
 .sidebar.collapsed ~ .main-content {
-  margin-left: 75px;
+  margin-left: var(--sidebar-collapsed-width);
 }
+
+/* ==========================================================
+   RESPONSIVE LAYOUT
+   ========================================================== */
+
+@media (max-width: 768px) {
+  .sidebar {
+    width: var(--sidebar-collapsed-width);
+    padding: 10px 8px;
+  }
+
+  .sidebar:not(.collapsed) {
+    width: min(var(--sidebar-expanded-width), 85vw);
+  }
+
+  .sidebar ~ .main-content {
+    margin-left: var(--sidebar-collapsed-width);
+  }
+
+  .sidebar:not(.collapsed) ~ .main-content {
+    margin-left: min(var(--sidebar-expanded-width), 85vw);
+  }
+
+  .sidebar.collapsed .nav-group > .submenu-container.submenu-overlay {
+    min-width: 200px;
+    max-width: calc(100vw - 90px);
+  }
+}
+
+/* ==========================================================
+   FLYOUT ANIMATION
+   ========================================================== */
+
+@keyframes sidebar-flyout-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ==========================================================
+   ACCESSIBILITY — REDUCED MOTION
+   ========================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar *,
+  .sidebar ~ .main-content {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+
+/* ==========================================================
+   FINAL FIX: Consistent collapsed sidebar icon alignment
+   Applies to both anchor links and button-based menu groups.
+   ========================================================== */
+
+.sidebar.collapsed > .nav > a.nav-link,
+.sidebar.collapsed > .nav > button.nav-link,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link {
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  width: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  max-height: 44px !important;
+  flex: 0 0 44px !important;
+
+  margin: 0 auto !important;
+  padding: 0 !important;
+  gap: 0 !important;
+
+  text-align: center !important;
+  line-height: 1 !important;
+  border: 1px solid transparent !important;
+  transform: none !important;
+}
+
+/* Remove Bootstrap's native button appearance only in the icon rail. */
+.sidebar.collapsed > .nav > button.nav-link,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  font-family: inherit !important;
+  font-size: 0 !important;
+}
+
+/* Normalize the icon wrapper used by button-based menu groups. */
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > span:first-child,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > span:first-child {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  flex: 0 0 21px !important;
+  width: 21px !important;
+  min-width: 21px !important;
+  max-width: 21px !important;
+  height: 21px !important;
+
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  line-height: 1 !important;
+}
+
+/* Give every direct or wrapped icon identical dimensions. */
+.sidebar.collapsed > .nav > a.nav-link > svg,
+.sidebar.collapsed > .nav > button.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > svg,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > span:first-child > svg,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > span:first-child > svg {
+  display: block !important;
+  flex: 0 0 21px !important;
+  width: 21px !important;
+  min-width: 21px !important;
+  max-width: 21px !important;
+  height: 21px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Ensure group arrows and labels do not affect icon centering. */
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > .arrow,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > .arrow,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link > .label,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link > .label {
+  display: none !important;
+}
+
+/* Keep active styling from shifting the icon position. */
+.sidebar.collapsed > .nav > a.nav-link.active,
+.sidebar.collapsed > .nav > button.nav-link.active,
+.sidebar.collapsed > .nav > .nav-group > a.nav-link.active,
+.sidebar.collapsed > .nav > .nav-group > button.nav-link.active {
+  border: 1px solid rgba(255, 255, 255, 0.13) !important;
+  box-shadow: inset 3px 0 0 var(--sidebar-active-accent) !important;
+}
+
+/* End sidebar styles. */

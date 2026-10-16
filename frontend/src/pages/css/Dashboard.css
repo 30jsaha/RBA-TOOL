@@ -162,6 +162,79 @@
   line-height: 18px;
   color: #000;
 }
+
+.pdf-export-only {
+  display: none;
+}
+
+.gst-pdf-export .pdf-export-only {
+  display: flex;
+}
+
+.gst-pdf-export .pdf-date-filter-column .MuiFormControl-root,
+.gst-pdf-export .pdf-date-filter-column .fw-bold.small {
+  display: none !important;
+}
+
+.gst-pdf-date-range {
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.gst-pdf-export #gstHeatMapContainer .province-blink {
+  animation: none !important;
+}
+
+.swt-pdf-export .pdf-export-only,
+.cit-pdf-export .pdf-export-only {
+  display: flex;
+}
+
+.swt-pdf-export .swt-pdf-date-filter-column .MuiFormControl-root,
+.swt-pdf-export .swt-pdf-date-filter-column .fw-bold.small,
+.cit-pdf-export .cit-pdf-date-filter-column .MuiFormControl-root,
+.cit-pdf-export .cit-pdf-date-filter-column .fw-bold.small {
+  display: none !important;
+}
+
+.swt-pdf-date-range,
+.cit-pdf-date-range {
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.swt-pdf-export #swtHeatMapContainer .province-blink,
+.cit-pdf-export #gstHeatMapContainer .province-blink {
+  animation: none !important;
+}
+
+.dashboard-pdf-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.dashboard-pdf-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top-color: var(--primary, #1976d2);
+  border-radius: 50%;
+  animation: dashboardPdfSpinner 0.8s linear infinite;
+}
+
+@keyframes dashboardPdfSpinner {
+  to { transform: rotate(360deg); }
+}
 /* Remove click highlight border on map shapes */
 .leaflet-interactive:focus,
 .leaflet-interactive:active {

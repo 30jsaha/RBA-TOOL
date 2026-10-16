@@ -30,6 +30,14 @@ import TableSkeleton from "../components/common/TableSkeleton";
 import ChartDataCard from "../components/common/ChartDataCard";
 import API from "../api/api";
 import { formatKinaAxisValue, formatKinaFullValue } from "../utils/apexChartFormatters";
+import {
+  closePdfExportProgress,
+  PdfExportCancelledError,
+  showPdfExportError,
+  startPdfExportProgress,
+  throwIfPdfExportCancelled,
+  updatePdfExportProgress,
+} from "../utils/dashboardPdfExportUi";
 import "./css/Dashboard.css";
 
 const PNGMapGST = lazy(() => import("../components/maps/PNGMapGST"));
@@ -125,6 +133,25 @@ const getSeriesTableColumns = (categoryLabel, series = [], formatValue) => [
 ];
 
 const makeCacheKey = (url, params) => `${url}:${JSON.stringify(params || {})}`;
+const PDF_MAP_READY_TIMEOUT_MS = 5000;
+
+const waitForGstMapRender = async () => {
+  const deadline = Date.now() + PDF_MAP_READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const map = document.getElementById("gstHeatMapContainer");
+    const hasProvinceLayer = Boolean(map?.querySelector("svg path.leaflet-interactive"));
+    const hasLegend = Boolean(map?.querySelector(".info.legend"));
+
+    if (map?.dataset.mapReady === "true" && hasProvinceLayer && hasLegend) {
+      return true;
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+
+  return false;
+};
 
 export default function Dashboard() {
   const initialRange = getRangeDates("1m");
@@ -164,6 +191,9 @@ export default function Dashboard() {
   });
 
   const dashboardRef = useRef();
+  const pdfExportInFlightRef = useRef(false);
+  const pdfExportCancelRequestedRef = useRef(false);
+  const [isPdfExporting, setIsPdfExporting] = useState(false);
   const activeControllersRef = useRef([]);
   const provinceSectionRef = useRef(null);
 
@@ -541,53 +571,139 @@ export default function Dashboard() {
   };
 
   const downloadDashboardPDF = async () => {
+    if (pdfExportInFlightRef.current) return;
+
     const input = dashboardRef.current;
     if (!input) {
       return;
     }
 
-    const pdf = new jsPDF("p", "mm", "a4");
+    pdfExportInFlightRef.current = true;
+    pdfExportCancelRequestedRef.current = false;
+    setIsPdfExporting(true);
+    startPdfExportProgress(pdfExportCancelRequestedRef);
+
+    let pdf;
     const sections = input.querySelectorAll(".page");
     const now = dayjs().format("DD MMM YYYY, HH:mm");
     let isFirstPage = true;
-
     const hiddenElements = input.querySelectorAll(".hideme");
+
     hiddenElements.forEach((element) => {
       element.dataset.originalDisplay = element.style.display;
       element.style.display = "none";
     });
+    input.classList.add("gst-pdf-export");
 
-    for (const section of sections) {
-      const canvas = await html2canvas(section, {
-        scale: 2,
-        useCORS: true,
-        scrollY: -window.scrollY,
-      });
+    let exportError = null;
+    let wasCancelled = false;
 
-      const imageData = canvas.toDataURL("image/png");
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const margin = 10;
-      const imageWidth = pageWidth - margin * 2;
-      const imageHeight = (canvas.height * imageWidth) / canvas.width;
+    try {
+      pdf = new jsPDF("p", "mm", "a4");
+      updatePdfExportProgress("Waiting for the map to finish rendering…");
+      await waitForGstMapRender();
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      await document.fonts?.ready;
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-      if (!isFirstPage) {
-        pdf.addPage();
+      updatePdfExportProgress("Capturing the live map and legend…");
+      const liveMap = document.getElementById("gstHeatMapContainer");
+      const liveMapRect = liveMap?.getBoundingClientRect();
+      const liveMapCanvas = liveMap
+        ? await html2canvas(liveMap, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ddd",
+            scrollX: 0,
+            scrollY: -window.scrollY,
+          })
+        : null;
+      const liveMapImageData = liveMapCanvas?.toDataURL("image/png");
+
+      for (const [sectionIndex, section] of sections.entries()) {
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+        updatePdfExportProgress(`Capturing dashboard section ${sectionIndex + 1} of ${sections.length}…`);
+        const canvas = await html2canvas(section, {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: "#ffffff",
+          scrollX: 0,
+          scrollY: -window.scrollY,
+          onclone: (clonedDocument) => {
+            const clonedMap = clonedDocument.querySelector("#gstHeatMapContainer");
+            if (!clonedMap || !liveMapImageData || !liveMapRect) {
+              return;
+            }
+
+            clonedMap.replaceChildren();
+            clonedMap.style.width = `${liveMapRect.width}px`;
+            clonedMap.style.height = `${liveMapRect.height}px`;
+
+            const mapImage = clonedDocument.createElement("img");
+            mapImage.src = liveMapImageData;
+            mapImage.alt = "Fraud TIN Distribution by Province map";
+            mapImage.style.display = "block";
+            mapImage.style.width = "100%";
+            mapImage.style.height = "100%";
+            mapImage.style.objectFit = "fill";
+            clonedMap.appendChild(mapImage);
+          },
+        });
+        throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+
+        const imageData = canvas.toDataURL("image/png");
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const headerHeight = 20;
+        const imageWidth = pageWidth - margin * 2;
+        const imageHeight = (canvas.height * imageWidth) / canvas.width;
+        const maxImageHeight = pageHeight - headerHeight - margin;
+        const fitScale = Math.min(1, maxImageHeight / imageHeight);
+        const fittedWidth = imageWidth * fitScale;
+        const fittedHeight = imageHeight * fitScale;
+        const imageX = (pageWidth - fittedWidth) / 2;
+
+        if (!isFirstPage) {
+          pdf.addPage();
+        }
+
+        pdf.setFontSize(12);
+        pdf.text("GST Dashboard Report", margin, 10);
+        pdf.setFontSize(8);
+        pdf.text(`Generated: ${now}`, margin, 15);
+        pdf.addImage(imageData, "PNG", imageX, headerHeight, fittedWidth, fittedHeight);
+
+        isFirstPage = false;
       }
 
-      pdf.setFontSize(12);
-      pdf.text("GST Dashboard Report", 10, 10);
-      pdf.setFontSize(8);
-      pdf.text(`Generated: ${now}`, 10, 15);
-      pdf.addImage(imageData, "PNG", margin, 20, imageWidth, imageHeight);
-
-      isFirstPage = false;
+      throwIfPdfExportCancelled(pdfExportCancelRequestedRef);
+      updatePdfExportProgress("Starting the PDF download…");
+      pdf.save(`GST-Dashboard_${dayjs().format("YYYY-MM-DD_HH-mm")}.pdf`);
+    } catch (error) {
+      if (error instanceof PdfExportCancelledError) {
+        wasCancelled = true;
+      } else {
+        exportError = error;
+      }
+    } finally {
+      input.classList.remove("gst-pdf-export");
+      hiddenElements.forEach((element) => {
+        element.style.display = element.dataset.originalDisplay || "";
+        delete element.dataset.originalDisplay;
+      });
+      closePdfExportProgress();
+      pdfExportInFlightRef.current = false;
+      pdfExportCancelRequestedRef.current = false;
+      setIsPdfExporting(false);
     }
 
-    hiddenElements.forEach((element) => {
-      element.style.display = element.dataset.originalDisplay || "";
-    });
-
-    pdf.save(`GST-Dashboard_${dayjs().format("YYYY-MM-DD_HH-mm")}.pdf`);
+    if (exportError && !wasCancelled) {
+      const retryResult = await showPdfExportError(exportError);
+      if (retryResult.isConfirmed) {
+        void downloadDashboardPDF();
+      }
+    }
   };
 
   const downloadCsv = async (endpoint, filename, columns) => {
@@ -788,6 +904,7 @@ export default function Dashboard() {
                     color="primary"
                     size="small"
                     onClick={downloadDashboardPDF}
+                    disabled={isPdfExporting}
                     className="hideme"
                   >
                     Download PDF
@@ -808,7 +925,11 @@ export default function Dashboard() {
                     </FormControl>
                   </div>
 
-                  <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0">
+                  <div className="col-md-6 d-flex justify-content-md-end gap-2 mt-2 mt-md-0 pdf-date-filter-column">
+                    <div className="pdf-export-only gst-pdf-date-range" aria-hidden="true">
+                      <span>Start Date: {appliedStartDate?.format("DD MMM YYYY") || "-"}</span>
+                      <span>End Date: {appliedEndDate?.format("DD MMM YYYY") || "-"}</span>
+                    </div>
                     {draftTenure === "custom" ? (
                       <LocalizationProvider dateAdapter={AdapterDayjs}>
                         <DatePicker

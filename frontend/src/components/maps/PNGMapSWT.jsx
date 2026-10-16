@@ -35,6 +35,7 @@ export default function PNGMapSWT({ staticData = [], onProvinceSelect = () => {}
     });
 
     mapRef.current = map;
+    container.setAttribute("data-map-ready", "false");
 
     fetch("/data/png-provinces.geojson")
       .then((r) => r.json())
@@ -217,10 +218,14 @@ export default function PNGMapSWT({ staticData = [], onProvinceSelect = () => {}
                 };
         
                 legend.addTo(map);
+                map.whenReady(() => {
+                  container.setAttribute("data-map-ready", "true");
+                });
 
       });
 
     return () => {
+      container.setAttribute("data-map-ready", "false");
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
