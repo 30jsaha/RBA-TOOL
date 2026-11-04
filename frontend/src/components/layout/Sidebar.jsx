@@ -283,7 +283,7 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div className="nav flex-column mt-4 px-2">
+      <div className="nav flex-column flex-nowrap mt-4 px-2">
         {dashboardItems.length > 0 && (
           <div ref={setGroupRef("dashboard")} className="nav-group">
             <button
